@@ -30,15 +30,10 @@ function cleanTelephonyHindi(t) {
   if (!t) return "";
   let s = t;
 
-  // 1. Telephony phonetic compression corrections for names
-  // Fix telephony mishearing of शुक्ला (e.g. "इस्थक्ला", "इस्तक्ला", "इस्थकला", "इस्कला", "चुकला", "चुकलाज", "सक्ला", "शुकला", "सुक्ला")
-  s = s.replace(/(?:इस्थक्ला|इस्तक्ला|इस्थकला|इस्तकला|इस्कला|इस्थकलाज|चुकला[ज]?|सक्ला|शुकला|सुक्ला|सिकला)/gi, "शुक्ला");
-  // Fix telephony mishearing of आयुष (e.g. "आईस", "आयूस", "आइस", "आयश")
-  s = s.replace(/\b(?:आईस|आयूस|आइस|आयश|आयोग)\b/gi, "आयुष");
-  // Fix telephony mishearing of स्रतांशु
-  s = s.replace(/(?:जयतान\s*चुश|यतानसु[ह]?|स्टाचा\s*चू|स्टाचा|सताचो|सताशो|स्टाचो|शतांचो|स्रतांचो|शतांशु|प्रतांशु|प्रतान्चु|प्रतांचु|स्रतांचु|श्रातांशु|स्रातांशु|सतान्शु|शतान्शु|श्रतांशु)/gi, "स्रतांशु");
-  // Clean commas separating names (e.g. "आयुष, इस्थक्ला" -> "आयुष शुक्ला")
-  s = s.replace(/,\s*/g, " ");
+  // NOTE: Pehle yahan developer ke test-call wale naam hardcoded the
+  // ("आयोग" -> "आयुष", "सक्ला" -> "शुक्ला", "स्रतांशु"...). Woh asli patients ke
+  // shabd bigaadte the (e.g. "आयोग" ek real shabd hai). Hata diye.
+  // Naam ki galti ko ab bot "naam padh ke confirm" karke pakadta hai.
 
   // 2. Standardized 3-Shift Time Slot corrections
   s = s.replace(/वजे/gi, "बजे");
@@ -87,7 +82,7 @@ const { cleanAndIsolateVoice } = require("../utils/audioDsp");
 /**
  * Transcribes audio buffer using Groq Whisper after deep DSP voice isolation and noise gating.
  */
-async function transcribePcmAudio(pcmBuffer, sampleRate = 8000) {
+async function transcribePcmAudio(pcmBuffer, sampleRate = 8000, { signal } = {}) {
   // Discard audio shorter than 0.35 seconds (line noise, clicks, breaths)
   const minBytes = Math.floor(sampleRate * 2 * 0.35);
   if (!pcmBuffer || pcmBuffer.length < minBytes) {
@@ -100,7 +95,8 @@ async function transcribePcmAudio(pcmBuffer, sampleRate = 8000) {
   const blob = new Blob([wavBuffer], { type: "audio/wav" });
   const formData = new FormData();
   formData.append("file", blob, "audio.wav");
-  formData.append("model", "whisper-large-v3");
+  // whisper-large-v3 = Hindi me zyada accurate; "-turbo" = tez. Env se chuno.
+  formData.append("model", process.env.STT_MODEL || "whisper-large-v3");
   formData.append("language", "hi");
   formData.append("temperature", "0");
   formData.append(
@@ -115,7 +111,8 @@ async function transcribePcmAudio(pcmBuffer, sampleRate = 8000) {
         Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
       },
       body: formData,
-      signal: AbortSignal.timeout(15000),
+      // 15s pehle tha — caller 15 second chup sunta. 6s ke baad "phir se boliye" behtar hai.
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(6000)]) : AbortSignal.timeout(6000),
     });
 
     if (!res.ok) {
@@ -146,6 +143,8 @@ async function transcribePcmAudio(pcmBuffer, sampleRate = 8000) {
 
     // Filter out common Whisper hallucination artifacts from background noise
     const noiseWords = ["झाल", "you", "bye", ".", "...", "thank you", "subtitles"];
+    // Whisper ke famous silence-hallucinations (YouTube subtitles se seekhe hue)
+    if (/सब्सक्राइब|subscribe|like\s*and\s*share|अमारा\.org|amara\.org/i.test(text)) return "";
     if (noiseWords.includes(text.toLowerCase()) || text.length < 2) {
       return "";
     }

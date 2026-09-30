@@ -15,10 +15,38 @@
  * (detected deterministically, not by trusting the AI) unlocks it.
  */
 
-const AFFIRMATIVE_RE =
-  /(?:^|\b)(?:हाँ|जी\s*हाँ|यस|yes|सही\s*है|correct|right|yeah|yep|sure|that's right|जी|bilkul|बिल्कुल|यही\s*नाम|यही\s*है|ठीक\s*है)(?:$|\b)/i;
-const NEGATIVE_RE = /(?:^|\b)(?:नहीं\s*है|गलत|wrong|nope|not this|नहीं\s*गलत|गलत\s*है|ये\s*नाम\s*नहीं)(?:$|\b)/i;
-const ASKED_CONFIRM_RE = /(?:क्या यह सही है|क्या यह नाम सही है|मैंने आपका नाम|नाम नोट किया|is that correct)/i;
+/*
+ * BUG FIX: purane AFFIRMATIVE/NEGATIVE regex `\b` use karte the. JavaScript me
+ * `\b` sirf ASCII [A-Za-z0-9_] samajhta hai, Devanagari nahi. Nateeja:
+ *   "नहीं, गलत है"          -> reject detect hi nahi hota tha
+ *   "ठीक है पर नाम गलत है"  -> galat naam CONFIRM ho jaata tha
+ * Ab Devanagari-aware boundaries + explicit priority rules.
+ */
+const B = "(?<![\\u0900-\\u097Fa-z])"; // word start
+const E = "(?![\\u0900-\\u097Fa-z])"; // word end
+const w = (alts) => new RegExp(`${B}(?:${alts})${E}`, "i");
+
+const NEG_WORD = w("नहीं|नही|ना|गलत|ग़लत|wrong|no|nope|nahi|galat");
+const STRONG_NEG = /(?:गलत|ग़लत|wrong|galat|सही\s*नहीं|ठीक\s*नहीं|ये\s*नहीं|यह\s*नहीं|नाम\s*नहीं|नहीं\s*है\s*(?:मेरा|नाम)|नहीं\s*,?\s*(?:मेरा\s*नाम|नाम))/i;
+const AFF_WORD = w("हाँ|हां|हा|जी|जी\\s*हाँ|सही|ठीक|बिल्कुल|बिलकुल|यही|हांजी|हाँजी|yes|yeah|yep|correct|right|sure|haan|ha|ji|theek|sahi|ok|okay|ओके|कर\\s*दो|कर\\s*दीजिए");
+const COLLOQUIAL_YES = /(?:यही\s*(?:नाम\s*)?है|सही\s*है|ठीक\s*है|बिल्कुल\s*सही)/i; // "नहीं नहीं, सही है" = haan
+
+/** @returns "yes" | "no" | null (ambiguous / unrelated) */
+function classifyConfirmation(text) {
+  const t = String(text || "").trim();
+  if (!t) return null;
+  if (STRONG_NEG.test(t)) return "no";
+  if (COLLOQUIAL_YES.test(t)) return "yes";
+  const neg = NEG_WORD.test(t);
+  const aff = AFF_WORD.test(t);
+  if (neg && !aff) return "no";
+  if (aff && !neg) return "yes";
+  if (neg && aff) return /^\s*जी\s*(नहीं|ना)/i.test(t) ? "no" : null;
+  return null;
+}
+
+const ASKED_CONFIRM_RE =
+  /(?:सही\s*है\s*[?]|क्या\s*यह\s*(?:नाम\s*)?सही|मैंने\s*आपका\s*नाम|नाम\s*नोट|बुक\s*कर\s*दूँ|बुक\s*कर\s*दूं|कन्फर्म|is\s*that\s*correct)/i;
 const ASKED_SPELL_RE = /(?:स्पेलिंग|spell)/i;
 const ASKED_NAME_RE =
   /(?:आपका\s*नाम|अपना\s*नाम|नाम\s*बताएं|नाम\s*बताओ|नाम\s*बताइए|नाम\s*क्या\s*है|your\s*name|full\s*name)/i;
@@ -76,12 +104,9 @@ function applyCallerTurn(session, callerText, heuristics) {
   const wasAskedForConfirmation = ASKED_CONFIRM_RE.test(lastMsg);
   const wasAskedForSpelling = ASKED_SPELL_RE.test(lastMsg);
   const wasAskedForName = ASKED_NAME_RE.test(lastMsg);
-  const trimmed = String(callerText || "").trim();
-  
-  // Colloquial Indian affirmative phrases like "यही नाम है", "नहीं, यही नाम है", "हाँ यही नाम है"
-  const hasYahiNaam = /(?:यही\s*नाम|यही\s*है|सही\s*है|हाँ|yes|correct|बिल्कुल|ठीक\s*है)/i.test(trimmed);
-  const isAffirmative = hasYahiNaam || AFFIRMATIVE_RE.test(trimmed);
-  const isNegative = !hasYahiNaam && NEGATIVE_RE.test(trimmed);
+  const verdict = classifyConfirmation(callerText);
+  const isAffirmative = verdict === "yes";
+  const isNegative = verdict === "no";
 
   if (session.nameConfirmed) {
     // LOCKED. Only an explicit rejection re-opens it.
@@ -155,4 +180,4 @@ function finalizeBookingName(session, booking) {
   return booking;
 }
 
-module.exports = { applyCallerTurn, applyAiDraft, finalizeBookingName, isInvalidPatientName };
+module.exports = { applyCallerTurn, applyAiDraft, finalizeBookingName, isInvalidPatientName, classifyConfirmation };

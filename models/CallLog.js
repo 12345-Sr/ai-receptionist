@@ -24,6 +24,8 @@ const callLogSchema = new mongoose.Schema(
     patientName: String,
     callerName: String,
     appointmentBooked: { type: Boolean, default: false },
+    flagged: String, // "emergency"
+    handoff: String, // "caller_request" | "dtmf_0"
     startedAt: { type: Date, default: Date.now },
     endedAt: Date,
     durationSeconds: Number,

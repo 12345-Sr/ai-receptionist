@@ -91,7 +91,7 @@ router.get("/calls", async (req, res) => {
       return res.json(calls);
     }
 
-    const allAppts = await Appointment.find({}, { phone: 1, patientName: 1 }).lean();
+    const allAppts = await Appointment.find({}, { phone: 1, patientName: 1 }).sort({ createdAt: -1 }).limit(2000).lean();
     const phoneToPatientMap = {};
     for (const a of allAppts) {
       const pKey = cleanPhone(a.phone);
@@ -131,7 +131,8 @@ router.get("/appointments", async (req, res) => {
     const appts = await Appointment.find().sort({ createdAt: -1 }).limit(100);
     res.json(appts);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[api] appointments:", err.message);
+    res.status(500).json({ error: "Failed to fetch appointments" });
   }
 });
 
