@@ -18,8 +18,8 @@ const { MPEGDecoder } = require("mpg123-decoder");
 
 const EDGE_VOICE = process.env.TTS_VOICE || "hi-IN-SwaraNeural";
 const EDGE_PROSODY = {
-  rate: process.env.TTS_RATE || "-5%",
-  pitch: process.env.TTS_PITCH || "-2Hz",
+  rate: process.env.TTS_RATE || "+10%",
+  pitch: process.env.TTS_PITCH || "+0Hz",
   volume: process.env.TTS_VOLUME || "+5%",
 };
 
