@@ -470,7 +470,16 @@ function handleCall(ws, deps, activeCalls) {
     db(
       CallLog.updateOne(
         { callSid },
-        { $set: { appointmentBooked: true, patientName: appt.patientName, callerName: appt.patientName } }
+        {
+          $set: {
+            appointmentBooked: true,
+            patientName: appt.patientName,
+            callerName: appt.patientName,
+            doctorName: appt.doctorName,
+            appointmentDate: appt.date,
+            appointmentTime: appt.time,
+          },
+        }
       )
     );
     return booking.confirmationSpeech(appt, { spokenName: session.patientNameSpoken });

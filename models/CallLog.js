@@ -23,6 +23,9 @@ const callLogSchema = new mongoose.Schema(
     transcript: [turnSchema],
     patientName: String,
     callerName: String,
+    doctorName: String,
+    appointmentDate: String,
+    appointmentTime: String,
     appointmentBooked: { type: Boolean, default: false },
     flagged: String, // "emergency"
     handoff: String, // "caller_request" | "dtmf_0"

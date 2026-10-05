@@ -73,8 +73,10 @@ function normalizeDoc(doc, phoneToPatientMap = {}) {
     call_time: callTimeStr,
     duration_sec: duration,
     booked: isBooked ? "yes" : "no",
-    appointment_date: appt.date || doc.appointment_date || "—",
+    appointment_date: appt.date || doc.appointment_date || doc.appointmentDate || "—",
     appointment_time: timeSlot,
+    doctor_name: appt.doctorName || doc.doctorName || doc.doctor_name || "",
+    department: appt.department || doc.department || "",
     notes: appt.reason || doc.notes || "",
   };
 }
