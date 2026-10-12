@@ -11,16 +11,26 @@ async function clearAll() {
     process.exit(1);
   }
 
-  await mongoose.connect(uri);
-  console.log("Connected to MongoDB Atlas");
+  const dbName = process.env.MONGODB_DB || "ai_receptionist";
+  await mongoose.connect(uri, { dbName });
+  console.log(`Connected to MongoDB Atlas (${mongoose.connection.name})`);
 
   const [delCalls, delAppts, delSlots] = await Promise.all([
     CallLog.deleteMany({}),
     Appointment.deleteMany({}),
     SlotCounter.deleteMany({})
   ]);
+  console.log(`Deleted ${delCalls.deletedCount} call logs, ${delAppts.deletedCount} appointments, and ${delSlots.deletedCount} slot counters from ${dbName}.`);
 
-  console.log(`Deleted ${delCalls.deletedCount} call logs, ${delAppts.deletedCount} appointments, and ${delSlots.deletedCount} slot counters.`);
+  // Also clear test DB if it had residual calls
+  const testDb = mongoose.connection.client.db("test");
+  await Promise.all([
+    testDb.collection("calllogs").deleteMany({}),
+    testDb.collection("appointments").deleteMany({}),
+    testDb.collection("slotcounters").deleteMany({})
+  ]);
+  console.log("Cleared residual test database as well.");
+
   await mongoose.disconnect();
   console.log("Database cleared successfully!");
   process.exit(0);
