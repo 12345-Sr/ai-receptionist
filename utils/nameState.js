@@ -53,15 +53,21 @@ const ASKED_NAME_RE =
 const EXPLICIT_NAME_RE = /(?:मेरा\s*नाम|मरीज़?\s*का\s*नाम|नाम\s*है|my\s*name\s*is)/i;
 
 const DOCTOR_NAME_PATTERNS = [
-  /sanjay\s*gupta/i,
-  /rohit\s*verma/i,
-  /ananya\s*sharma/i,
-  /priya\s*nair/i,
-  /संजय\s*गुप्ता/i,
-  /रोहित\s*वर्मा/i,
-  /अनन्या\s*शर्मा/i,
-  /प्रिया\s*नायर/i,
-  /हॉस्पिटल|क्लिनिक/i
+  /chawla/i,
+  /चावला/i,
+  /gandhi/i,
+  /गांधी/i,
+  /suri/i,
+  /सूरी/i,
+  /bhaduri/i,
+  /भादुरी/i,
+  /ambwani/i,
+  /अम्बवानी/i,
+  /umesh\s*kapoor/i,
+  /उमेश\s*कपूर/i,
+  /saurabh/i,
+  /gaurav/i,
+  /हॉस्पिटल|क्लिनिक|hospital|kmc/i
 ];
 
 function isInvalidPatientName(name) {

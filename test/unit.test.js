@@ -30,9 +30,9 @@ test("name confirmation (Devanagari-safe)", () => {
 });
 
 test("normalizers", () => {
-  assert.equal(booking.normalizeDoctor("Dr. Rohit Verma").name, "Dr. Rohit Verma");
-  assert.equal(booking.normalizeDoctor("डॉक्टर संजय गुप्ता").name, "Dr. Sanjay Gupta");
-  assert.equal(booking.normalizeDoctor("cardiologist").name, "Dr. Rohit Verma");
+  assert.equal(booking.normalizeDoctor("Dr. H.S. Chawla").name, "Dr. H.S. Chawla");
+  assert.equal(booking.normalizeDoctor("डॉक्टर गौरव चावला").name, "Dr. Gaurav Chawla");
+  assert.equal(booking.normalizeDoctor("gastroenterologist").name, "Dr. Gaurav Chawla");
   assert.equal(booking.normalizeDoctor("dentist"), null);
 
   for (const [t, want] of [["10:00 AM", "10:00 AM"], ["सुबह दस बजे", "10:00 AM"], ["2 PM", "2:00 PM"], ["दोपहर", "2:00 PM"],
@@ -50,14 +50,14 @@ test("normalizers", () => {
 });
 
 test("slot rules", () => {
-  const rohit = booking.normalizeDoctor("rohit"); // Mon/Wed/Fri
+  const umesh = booking.normalizeDoctor("umesh"); // Mon/Wed/Fri
   const [m, n, e] = require("../config/hospitalConfig").shifts;
-  assert.equal(booking.slotProblem(rohit, "2026-09-30", m, CLOCK), "past_slot"); // 10 AM already gone
-  assert.equal(booking.slotProblem(rohit, "2026-09-30", n, CLOCK), null);
-  assert.equal(booking.slotProblem(rohit, "2026-10-01", n, CLOCK), "doctor_off"); // Thursday
-  assert.equal(booking.slotProblem(rohit, "2026-10-04", n, CLOCK), "opd_closed"); // Sunday
-  assert.equal(booking.slotProblem(rohit, "2026-09-29", n, CLOCK), "past_date");
-  assert.equal(booking.slotProblem(rohit, "2026-10-02", e, CLOCK), null); // Friday
+  assert.equal(booking.slotProblem(umesh, "2026-09-30", m, CLOCK), "past_slot"); // 10 AM already gone
+  assert.equal(booking.slotProblem(umesh, "2026-09-30", n, CLOCK), null);
+  assert.equal(booking.slotProblem(umesh, "2026-10-01", n, CLOCK), "doctor_off"); // Thursday
+  assert.equal(booking.slotProblem(umesh, "2026-10-04", n, CLOCK), "opd_closed"); // Sunday
+  assert.equal(booking.slotProblem(umesh, "2026-09-29", n, CLOCK), "past_date");
+  assert.equal(booking.slotProblem(umesh, "2026-10-02", e, CLOCK), null); // Friday
 });
 
 test("validateAndBook: validation, capacity, idempotency", async () => {
@@ -68,7 +68,7 @@ test("validateAndBook: validation, capacity, idempotency", async () => {
   const cap = cfg.slotCapacity;
   cfg.slotCapacity = 2;
   try {
-    const req = { doctorName: "Dr. Rohit Verma", date: "2026-10-01", time: "2:00 PM" };
+    const req = { doctorName: "Dr. Umesh Kapoor", date: "2026-10-01", time: "2:00 PM" };
     let r = await booking.validateAndBook({ request: req, patientName: "Ramesh", phone: "1", callSid: "c1", clock: CLOCK });
     assert.equal(r.ok, false);
     assert.equal(r.reason, "doctor_off");
@@ -78,7 +78,7 @@ test("validateAndBook: validation, capacity, idempotency", async () => {
     r = await booking.validateAndBook({ request: ok, patientName: "Ramesh", phone: "1", callSid: "c1", clock: CLOCK });
     assert.equal(r.ok, true);
     assert.equal(r.appointment.date, "2026-10-02");
-    assert.equal(r.appointment.department, "Cardiologist");
+    assert.equal(r.appointment.department, "Dermatologist");
 
     // Same call repeats the tag -> no duplicate row, no extra seat used
     r = await booking.validateAndBook({ request: ok, patientName: "Ramesh", phone: "1", callSid: "c1", clock: CLOCK });

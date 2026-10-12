@@ -99,14 +99,14 @@ async function waitFor(fn, ms = 8000) {
 }
 
 test("full booking call: framing, turn-taking, validated booking", async () => {
-  const doctor = booking.normalizeDoctor("Dr. Ananya Sharma");
+  const doctor = booking.normalizeDoctor("Dr. H.S. Chawla");
   let slotDate, slotTime;
   const h = harness({
     sttQueue: ["मुझे दो दिन से बुखार है", "रमेश कुमार", "हाँ कर दो"],
     aiScript: (last) => {
-      if (/बुखार/.test(last)) return { reply: `अरे, बुखार में तो तकलीफ़ होती है। डॉक्टर अनन्या शर्मा ठीक रहेंगी। मरीज़ का नाम बताइए?\n<<DRAFT_JSON>>{"doctorName":"Dr. Ananya Sharma","date":"${slotDate}","time":"${slotTime}","reason":"बुखार"}<<END_DRAFT_JSON>>` };
-      if (/रमेश/.test(last)) return { reply: `तो रमेश कुमार जी, डॉक्टर अनन्या शर्मा — बुक कर दूँ?\n<<DRAFT_JSON>>{"patientName":"रमेश कुमार","doctorName":"Dr. Ananya Sharma","date":"${slotDate}","time":"${slotTime}"}<<END_DRAFT_JSON>>` };
-      return { reply: `ठीक है, बुक कर रही हूँ।\n<<DRAFT_JSON>>{}<<END_DRAFT_JSON>>\n<<BOOKING_JSON>>{"patientName":"Galat Naam","doctorName":"Dr. Ananya Sharma","date":"${slotDate}","time":"${slotTime}","reason":"बुखार"}<<END_BOOKING_JSON>>` };
+      if (/बुखार/.test(last)) return { reply: `अरे, बुखार में तो तकलीफ़ होती है। डॉक्टर एच.एस. चावला ठीक रहेंगे। मरीज़ का नाम बताइए?\n<<DRAFT_JSON>>{"doctorName":"Dr. H.S. Chawla","date":"${slotDate}","time":"${slotTime}","reason":"बुखार"}<<END_DRAFT_JSON>>` };
+      if (/रमेश/.test(last)) return { reply: `तो रमेश कुमार जी, डॉक्टर एच.एस. चावला — बुक कर दूँ?\n<<DRAFT_JSON>>{"patientName":"रमेश कुमार","doctorName":"Dr. H.S. Chawla","date":"${slotDate}","time":"${slotTime}"}<<END_DRAFT_JSON>>` };
+      return { reply: `ठीक है, बुक कर रही हूँ।\n<<DRAFT_JSON>>{}<<END_DRAFT_JSON>>\n<<BOOKING_JSON>>{"patientName":"Galat Naam","doctorName":"Dr. H.S. Chawla","date":"${slotDate}","time":"${slotTime}","reason":"बुखार"}<<END_BOOKING_JSON>>` };
     },
   });
   const avail = await booking.getAvailability(doctor); // after stubs are installed
@@ -164,8 +164,8 @@ test("barge-in: caller talking over the bot sends Exotel 'clear' and stops audio
 
 test("overlapping speech: slow LLM turn is cancelled and merged, only one reply", async () => {
   const h = harness({
-    sttQueue: ["मुझे अपॉइंटमेंट", "डॉक्टर रोहित वर्मा के साथ"],
-    aiScript: (last) => ({ reply: `ठीक है।`, delay: /रोहित/.test(last) ? 50 : 3000 }),
+    sttQueue: ["मुझे अपॉइंटमेंट", "डॉक्टर गौरव चावला के साथ"],
+    aiScript: (last) => ({ reply: `ठीक है।`, delay: /गौरव/.test(last) ? 50 : 3000 }),
   });
   const { ws, events } = await connect(h.server);
   try {
@@ -176,7 +176,7 @@ test("overlapping speech: slow LLM turn is cancelled and merged, only one reply"
     await say(ws, 600, 400);
     assert.ok(await waitFor(() => h.spoken.includes("ठीक है।")));
     await sleep(500);
-    assert.deepEqual(h.aiCalls, ["मुझे अपॉइंटमेंट", "मुझे अपॉइंटमेंट डॉक्टर रोहित वर्मा के साथ"]);
+    assert.deepEqual(h.aiCalls, ["मुझे अपॉइंटमेंट", "मुझे अपॉइंटमेंट डॉक्टर गौरव चावला के साथ"]);
     assert.equal(h.spoken.filter((s) => s === "ठीक है।").length, 1, "only one reply spoken");
   } finally {
     ws.close();
@@ -191,7 +191,7 @@ test("emergency keywords get an immediate deterministic reply (no LLM)", async (
     await waitFor(() => events.some((e) => e.event === "mark"), 6000);
     await sleep(300);
     await say(ws);
-    assert.ok(await waitFor(() => h.spoken.some((s) => s.includes("एक सौ बारह"))));
+    assert.ok(await waitFor(() => h.spoken.some((s) => s.includes("1800 120 3176") || s.includes("इमरजेंसी"))));
     assert.equal(h.aiCalls.length, 0);
   } finally {
     ws.close();
@@ -200,11 +200,11 @@ test("emergency keywords get an immediate deterministic reply (no LLM)", async (
 });
 
 test("booking tag without caller's 'yes' is NOT saved; bot reads back and asks", async () => {
-  const doctor = booking.normalizeDoctor("Dr. Ananya Sharma");
+  const doctor = booking.normalizeDoctor("Dr. H.S. Chawla");
   let d, t;
   const h = harness({
     sttQueue: ["मेरा नाम सुनीता वर्मा है"],
-    aiScript: () => ({ reply: `ठीक है, बुक कर रही हूँ।\n<<DRAFT_JSON>>{"patientName":"सुनीता वर्मा"}<<END_DRAFT_JSON>>\n<<BOOKING_JSON>>{"doctorName":"Dr. Ananya Sharma","date":"${d}","time":"${t}"}<<END_BOOKING_JSON>>` }),
+    aiScript: () => ({ reply: `ठीक है, बुक कर रही हूँ।\n<<DRAFT_JSON>>{"patientName":"सुनीता वर्मा"}<<END_DRAFT_JSON>>\n<<BOOKING_JSON>>{"doctorName":"Dr. H.S. Chawla","date":"${d}","time":"${t}"}<<END_BOOKING_JSON>>` }),
   });
   const avail = await booking.getAvailability(doctor);
   d = avail[0].date; t = avail[0].shifts[0].time;
@@ -213,7 +213,7 @@ test("booking tag without caller's 'yes' is NOT saved; bot reads back and asks",
     await waitFor(() => events.some((e) => e.event === "mark"), 6000);
     await sleep(300);
     await say(ws);
-    assert.ok(await waitFor(() => h.spoken.some((s) => /^तो सुनीता जी, डॉक्टर अनन्या शर्मा, .* बुक कर दूँ\?$/.test(s))), `spoken: ${h.spoken}`);
+    assert.ok(await waitFor(() => h.spoken.some((s) => /^तो सुनीता जी, डॉक्टर एच\.एस\. चावला, .* बुक कर दूँ\?$/.test(s))), `spoken: ${h.spoken}`);
     assert.equal(h.mm.Appointment.rows.length, 0);
   } finally {
     ws.close();

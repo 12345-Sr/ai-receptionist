@@ -2,6 +2,7 @@ require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") }
 const mongoose = require("mongoose");
 const CallLog = require("../models/CallLog");
 const Appointment = require("../models/Appointment");
+const SlotCounter = require("../models/SlotCounter");
 
 async function clearAll() {
   const uri = process.env.MONGODB_URI;
@@ -13,12 +14,13 @@ async function clearAll() {
   await mongoose.connect(uri);
   console.log("Connected to MongoDB Atlas");
 
-  const [delCalls, delAppts] = await Promise.all([
+  const [delCalls, delAppts, delSlots] = await Promise.all([
     CallLog.deleteMany({}),
-    Appointment.deleteMany({})
+    Appointment.deleteMany({}),
+    SlotCounter.deleteMany({})
   ]);
 
-  console.log(`Deleted ${delCalls.deletedCount} call logs and ${delAppts.deletedCount} appointments.`);
+  console.log(`Deleted ${delCalls.deletedCount} call logs, ${delAppts.deletedCount} appointments, and ${delSlots.deletedCount} slot counters.`);
   await mongoose.disconnect();
   console.log("Database cleared successfully!");
   process.exit(0);
