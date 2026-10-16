@@ -53,7 +53,7 @@ const CONF = {
 
 const PHRASES = {
   greeting: hospitalConfig.greeting,
-  fillers: ["हम्म, एक सेकंड।", "जी, देख रही हूँ।", "अच्छा, एक पल।"],
+  fillers: [],
   reprompts: ["हेलो, क्या आप लाइन पर हैं?", "मुझे आपकी आवाज़ नहीं आ रही, थोड़ा ज़ोर से बोलिए।"],
   goodbye: "लगता है लाइन में दिक्कत है। आप कभी भी दोबारा कॉल कर सकते हैं। धन्यवाद!",
   sorry: "माफ़ कीजिए, आवाज़ थोड़ी कट गई। एक बार फिर से बताएँगे?",
@@ -155,7 +155,7 @@ function handleCall(ws, deps, activeCalls, adapter = ADAPTERS["/exotel/media"]()
    */
   function startPlayback({ cacheable = false } = {}) {
     if (closed) {
-      const dead = { push() {}, end() {}, done: Promise.resolve(false), finished: true };
+      const dead = { push() { }, end() { }, done: Promise.resolve(false), finished: true };
       return dead;
     }
     if (current) stopPlayback("replaced");
