@@ -1,0 +1,13 @@
+# VPS pe: cp .env.example .env (values bharo) && docker compose up -d --build
+# HTTPS + WebSocket ke liye aage Caddy/Nginx lagao (Plivo ko wss:// chahiye).
+services:
+  receptionist:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    stop_grace_period: 30s

@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test test/unit.test.js test/call.test.js test/stream.test.js test/plivo.test.js",
+    "test": "node --test test/unit.test.js test/call.test.js test/stream.test.js test/plivo.test.js test/deploy.test.js",
     "generate-pdf": "node scripts/generateHospitalPdf.js",
     "clear-db": "node scripts/clearDatabase.js"
   },

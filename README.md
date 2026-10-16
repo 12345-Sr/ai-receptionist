@@ -16,7 +16,7 @@ Caller ──PSTN──► Exotel number ──► Voicebot applet ──wss─�
                  bookingService (server validation,       │
                  slot capacity, doctor days, idempotent)  │
                          ▼                                │
-  TTS queue: Sarvam stream → ElevenLabs → Edge, LRU cache ──► ≥3200-byte frames
+  TTS queue: Sarvam → Azure → ElevenLabs → Edge, LRU cache ──► ≥3200-byte frames
 ```
 
 ## v3: smooth + sasta
@@ -51,6 +51,8 @@ Caller ──PSTN──► Exotel number ──► Voicebot applet ──wss─�
 | Humanlike | — | Fillers, silence reprompt, emergency reply, human handoff, read-back confirmation |
 | Security | `/api` + `/exotel/outbound` khule (koi bhi aapke account se call lagwa sakta tha) | API key; CORS allow-list |
 
+> 🚀 **Production deploy: [DEPLOY.md](DEPLOY.md)** — accounts, Render, Plivo, go-live checklist, kharcha.
+
 ## Plivo setup (recommended)
 
 Plivo onboarding me **"Build Your Voice Agent Programmatically (WebSocket, Audio Streaming)"** chuno.
@@ -84,7 +86,7 @@ Exotel bhi chalta rahega (`/exotel/media`); dono ek hi server pe.
 ```bash
 cp .env.example .env     # values bharo
 npm install
-npm test                 # 26 tests: booking rules + simulated Exotel & Plivo calls (batch + streaming)
+npm test                 # 29 tests: booking rules + simulated Exotel & Plivo calls (batch + streaming)
 npm run dev
 ngrok http 3000          # local testing
 ```

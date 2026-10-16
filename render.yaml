@@ -1,16 +1,20 @@
+# Render Blueprint — Dashboard > New > Blueprint > is repo ko chuno.
+# "sync: false" wali values Render khud poochega (secrets).
 services:
   - type: web
     name: ai-receptionist
     runtime: node
-    # Free plan 15 min idle ke baad so jaata hai -> pehli call pe 30-60s cold start
-    # -> Exotel WebSocket fail. Live phone line ke liye paid plan zaroori.
+    # starter ($7): ~3-4 ek saath calls. Zyada concurrency => standard ($25).
+    # Free plan NAHI: 15 min idle ke baad so jaata hai -> pehli call fail.
     plan: starter
-    # Callers + Exotel India me hain; Oregon (USA) se har turn pe ~250ms extra
+    # Callers India me; Singapore sabse nazdeek Render region
     region: singapore
-    buildCommand: npm ci
-    startCommand: npm start
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
     healthCheckPath: /health
+    autoDeploy: true
     envVars:
+      # ---------- server ----------
       - key: NODE_ENV
         value: production
       - key: NODE_VERSION
@@ -19,16 +23,18 @@ services:
         value: Asia/Kolkata
       - key: PORT
         value: 10000
-      - key: BASE_URL
+      - key: BASE_URL # https://ai-receptionist.onrender.com (ya custom domain)
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false
       - key: DASHBOARD_API_KEY
         generateValue: true
+      # ---------- database ----------
       - key: MONGODB_URI
         sync: false
       - key: MONGODB_DB
         value: ai_receptionist
+      # ---------- Plivo ----------
       - key: PLIVO_AUTH_ID
         sync: false
       - key: PLIVO_AUTH_TOKEN
@@ -39,47 +45,50 @@ services:
         value: "8000"
       - key: PLIVO_MACHINE_DETECTION
         value: "true"
-      - key: HANDOFF_NUMBER
-        sync: false
-      - key: EXOTEL_API_KEY
-        sync: false
-      - key: EXOTEL_API_TOKEN
-        sync: false
-      - key: EXOTEL_SID
-        sync: false
-      - key: EXOTEL_PHONE_NUMBER
-        sync: false
-      - key: EXOTEL_APP_ID
-        sync: false
       - key: HUMAN_HANDOFF
-        value: "false"
+        value: "true"
+      - key: HANDOFF_NUMBER # reception ka number, e.g. 917408412008
+        sync: false
+      # ---------- LLM (Groq -> Gemini fallback) ----------
+      - key: LLM_PRIMARY
+        value: groq
       - key: GROQ_API_KEY
         sync: false
+      # gpt-oss-20b: sasta + prompt caching (cached input 50% off)
       - key: GROQ_MODEL
-        value: qwen/qwen3.8-27b
+        value: openai/gpt-oss-20b
+      - key: GROQ_REASONING_EFFORT
+        value: low
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.5-flash-lite
-      - key: STT_MODEL
-        value: whisper-large-v3-turbo
       - key: LLM_STREAM
         value: "true"
+      # ---------- STT ----------
+      - key: STT_PROVIDER
+        value: groq
+      - key: STT_MODEL
+        value: whisper-large-v3-turbo
+      # ---------- TTS (Sarvam -> Azure -> Edge) ----------
       - key: TTS_ENGINES
-        value: sarvam,elevenlabs,edge
+        value: sarvam,azure,elevenlabs,edge
       - key: SARVAM_API_KEY
         sync: false
       - key: SARVAM_MODEL
         value: bulbul:v3
       - key: SARVAM_SPEAKER
         value: priya
-      - key: ELEVENLABS_API_KEY
+      - key: AZURE_SPEECH_KEY
         sync: false
-      - key: ELEVENLABS_VOICE_ID
-        value: EXAVITQu4vr4xnSDxMaL
-      - key: MAX_CALL_SECONDS
-        value: "420"
-      - key: TTS_VOICE
+      - key: AZURE_SPEECH_REGION
+        value: centralindia
+      - key: AZURE_TTS_VOICE
         value: hi-IN-SwaraNeural
+      # ---------- conversation / cost ----------
       - key: SLOT_CAPACITY
         value: "8"
+      - key: MAX_CALL_SECONDS
+        value: "420"
+      - key: IDLE_REPROMPT_MS
+        value: "7000"

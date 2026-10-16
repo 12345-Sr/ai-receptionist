@@ -4,6 +4,7 @@
  * Engines: order TTS_ENGINES env se (default: sarvam,elevenlabs,edge).
  *  - Sarvam Bulbul: Indian Hindi voice, HTTP streaming, ElevenLabs se ~5-10x sasta.
  *  - ElevenLabs Flash: sabse natural, sabse mehenga — premium clients ke liye.
+ *  - Azure Neural: official Microsoft (SwaraNeural), sasta, SLA — recommended fallback.
  *  - Microsoft Edge: free, lekin unofficial endpoint (kabhi bhi band ho sakta hai) —
  *    sirf aakhri fallback.
  * Jis engine ki API key nahi, woh apne aap skip.
@@ -270,6 +271,54 @@ async function synthSarvam(text, rate, signal) {
   return b64 ? wavToPcm(Buffer.from(b64, "base64"), rate) : null;
 }
 
+/**
+ * Azure Neural TTS (official, SLA). Wahi hi-IN-SwaraNeural awaaz jo Edge deta hai,
+ * lekin paid + reliable. Seedha telephony PCM (raw-8khz/16khz) stream — koi MP3
+ * decode/resample nahi. Free tier: 5 lakh characters/month.
+ */
+const AZURE_FORMATS = { 8000: "raw-8khz-16bit-mono-pcm", 16000: "raw-16khz-16bit-mono-pcm", 24000: "raw-24khz-16bit-mono-pcm" };
+const xmlText = (t) => String(t).replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]);
+
+async function synthAzureStream(text, rate, { signal, onChunk }) {
+  const key = process.env.AZURE_SPEECH_KEY;
+  const region = process.env.AZURE_SPEECH_REGION || "centralindia";
+  if (!key) return 0;
+  const reqRate = AZURE_FORMATS[rate] ? rate : 16000;
+  const voice = process.env.AZURE_TTS_VOICE || process.env.TTS_VOICE || "hi-IN-SwaraNeural";
+  const ssml =
+    `<speak version="1.0" xml:lang="hi-IN"><voice name="${xmlText(voice)}">` +
+    `<prosody rate="${xmlText(EDGE_PROSODY.rate)}" pitch="${xmlText(EDGE_PROSODY.pitch)}">${xmlText(text)}</prosody></voice></speak>`;
+  const res = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+    method: "POST",
+    headers: {
+      "Ocp-Apim-Subscription-Key": key,
+      "Content-Type": "application/ssml+xml",
+      "X-Microsoft-OutputFormat": AZURE_FORMATS[reqRate],
+      "User-Agent": "ai-receptionist",
+    },
+    body: ssml,
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000),
+  });
+  if (!res.ok || !res.body) {
+    console.warn(`[tts] Azure ${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`);
+    return 0;
+  }
+  let total = 0;
+  let carry = Buffer.alloc(0);
+  for await (const part of res.body) {
+    let buf = carry.length ? Buffer.concat([carry, Buffer.from(part)]) : Buffer.from(part);
+    const even = buf.length - (buf.length % 2);
+    carry = buf.subarray(even);
+    buf = buf.subarray(0, even);
+    if (!buf.length) continue;
+    const out = reqRate === rate ? buf : floatToPcm(int16BufToFloat(buf), reqRate, rate);
+    total += out.length;
+    await onChunk(out);
+    if (signal?.aborted) break;
+  }
+  return total;
+}
+
 let edgeInstance = null;
 async function edgeClient(fresh = false) {
   if (edgeInstance && !fresh) return edgeInstance;
@@ -335,10 +384,11 @@ function cachePut(key, buf) {
 }
 
 function engineOrder() {
-  const want = (process.env.TTS_ENGINES || "sarvam,elevenlabs,edge").split(",").map((x) => x.trim().toLowerCase());
+  const want = (process.env.TTS_ENGINES || "sarvam,azure,elevenlabs,edge").split(",").map((x) => x.trim().toLowerCase());
   const has = {
     sarvam: Boolean(process.env.SARVAM_API_KEY),
     elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY),
+    azure: Boolean(process.env.AZURE_SPEECH_KEY),
     edge: process.env.TTS_DISABLE_EDGE !== "true",
   };
   return want.filter((e) => has[e]);
@@ -381,6 +431,8 @@ async function speakToPcm(text, rate, { signal, onChunk, cacheable = false } = {
           const pcm = await synthSarvam(clean, rate, signal);
           if (pcm?.length) { await tap(pcm); bytes = pcm.length; }
         }
+      } else if (engine === "azure") {
+        bytes = await synthAzureStream(clean, rate, { signal, onChunk: tap });
       } else if (engine === "elevenlabs") {
         bytes = await synthElevenLabsStream(clean, rate, { signal, onChunk: tap });
       } else if (engine === "edge") {

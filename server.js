@@ -3,6 +3,7 @@ const http = require("http");
 const express = require("express");
 const mongoose = require("mongoose");
 const connectDB = require("./config/db");
+const { assertEnv } = require("./config/validateEnv");
 
 const dataRoutes = require("./routes/dataRoutes");
 const exotelRoutes = require("./routes/exotelRoutes");
@@ -60,13 +61,15 @@ app.use("/api", requireApiKey, dataRoutes);
 setupExotelWebSocketServer(server);
 
 const PORT = process.env.PORT || 3000;
-connectDB()
+Promise.resolve()
+  .then(assertEnv)
+  .then(connectDB)
   .then(() => {
     server.listen(PORT, () => {
       const domain = (process.env.BASE_URL || `localhost:${PORT}`).replace(/^https?:\/\//, "").replace(/\/$/, "");
       console.log(`[server] listening on ${PORT} | Exotel stream: wss://${domain}/exotel/media | Plivo answer URL: https://${domain}/plivo/answer`);
       // Greeting + fillers pehle se render => call uthte hi awaaz, LLM slow ho to filler turant
-      preWarmTTS([PHRASES.greeting, ...PHRASES.fillers, ...PHRASES.reprompts, PHRASES.goodbye, PHRASES.handoff, PHRASES.timeLimit, PHRASES.sorry], [8000]).catch(
+      preWarmTTS([PHRASES.greeting, ...PHRASES.fillers, ...PHRASES.reprompts, PHRASES.goodbye, PHRASES.handoff, PHRASES.timeLimit, PHRASES.sorry], [...new Set([8000, Number(process.env.PLIVO_SAMPLE_RATE) || 8000])]).catch(
         (err) => console.warn("[server] TTS pre-warm failed (non-fatal):", err.message)
       );
     });

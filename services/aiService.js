@@ -129,9 +129,9 @@ async function callGroq(messages, systemPrompt, signal) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return null;
   const body = {
-    model: process.env.GROQ_MODEL || "qwen/qwen3-32b",
+    model: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
     temperature: Number(process.env.LLM_TEMPERATURE || 0.35),
-    max_tokens: Number(process.env.LLM_MAX_TOKENS || 400),
+    max_tokens: Number(process.env.LLM_MAX_TOKENS || 600),
     messages: [{ role: "system", content: systemPrompt }, ...messages],
   };
   // Qwen3/reasoning models: set GROQ_REASONING_EFFORT=none (agar model support kare)
@@ -162,7 +162,7 @@ async function callGemini(messages, systemPrompt, signal) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
   const models = [...new Set([process.env.GEMINI_MODEL, process.env.GEMINI_FALLBACK_MODEL].filter(Boolean))];
-  if (!models.length) models.push("gemini-2.5-flash-lite");
+  if (!models.length) models.push("gemini-3.5-flash-lite");
 
   const contents = messages.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
@@ -330,9 +330,9 @@ async function streamGroq(messages, systemPrompt, signal, onDelta) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return false;
   const body = {
-    model: process.env.GROQ_MODEL || "qwen/qwen3-32b",
+    model: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
     temperature: Number(process.env.LLM_TEMPERATURE || 0.35),
-    max_tokens: Number(process.env.LLM_MAX_TOKENS || 400),
+    max_tokens: Number(process.env.LLM_MAX_TOKENS || 600),
     stream: true,
     messages: [{ role: "system", content: systemPrompt }, ...messages],
   };
@@ -384,11 +384,11 @@ async function streamGroq(messages, systemPrompt, signal, onDelta) {
 async function streamGemini(messages, systemPrompt, signal, onDelta) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return false;
-  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+  const model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
   const contents = messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
   const generationConfig = {
     temperature: Number(process.env.LLM_TEMPERATURE || 0.35),
-    maxOutputTokens: Number(process.env.LLM_MAX_TOKENS || 400) + 100,
+    maxOutputTokens: Number(process.env.LLM_MAX_TOKENS || 600) + 100,
   };
   if (process.env.GEMINI_THINKING_LEVEL) generationConfig.thinkingConfig = { thinkingLevel: process.env.GEMINI_THINKING_LEVEL };
 
