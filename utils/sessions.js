@@ -23,6 +23,7 @@ function newSession() {
     appointmentBooked: false,
     appointments: [],
     callerPhone: null,
+    direction: null, // "inbound" | "outbound" (Plivo answer webhook se)
     createdAt: Date.now(),
     touchedAt: Date.now(),
   };

@@ -1,4 +1,4 @@
-# AI Receptionist: Hindi Voice Agent (Exotel)
+# AI Receptionist: Hindi Voice Agent (Plivo / Exotel)
 
 Hospital ke liye AI receptionist. Asli phone call uthata hai, Hindi/Hinglish mein baat karta hai, aur doctor ki appointment **validate karke** MongoDB mein book karta hai.
 
@@ -51,12 +51,40 @@ Caller ──PSTN──► Exotel number ──► Voicebot applet ──wss─�
 | Humanlike | — | Fillers, silence reprompt, emergency reply, human handoff, read-back confirmation |
 | Security | `/api` + `/exotel/outbound` khule (koi bhi aapke account se call lagwa sakta tha) | API key; CORS allow-list |
 
+## Plivo setup (recommended)
+
+Plivo onboarding me **"Build Your Voice Agent Programmatically (WebSocket, Audio Streaming)"** chuno.
+
+1. Deploy karo (Render) aur `.env` me `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`, `PLIVO_PHONE_NUMBER`, `BASE_URL=https://<domain>` bharo.
+2. Plivo console → **Voice → Applications → Add New (XML)**:
+   - Answer URL: `https://<domain>/plivo/answer` (POST)
+   - Hangup URL: `https://<domain>/plivo/hangup` (POST)
+3. **Phone Numbers** → apna Indian number → Application = upar wali app. (India number ke liye Plivo KYC docs lagenge.)
+4. Call karo. Server khud ye XML deta hai:
+
+```xml
+<Response>
+  <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-l16;rate=8000">
+    wss://<domain>/plivo/media?c=<CallUUID>&t=<hmac>
+  </Stream>
+  <Dial><Number>reception</Number></Dial>   <!-- sirf HUMAN_HANDOFF=true -->
+</Response>
+```
+
+- Stream URL har call ke liye **signed** hai — bina token ke WebSocket 401 (koi aapke LLM/TTS ka bill nahi bana sakta).
+- Bot call kaate (silence / time limit) to Plivo REST se hangup hota hai, warna `keepCallAlive` call ko `<Dial>` pe le jaata.
+- Handoff: "इंसान से बात" / DTMF 0 → stream band → `<Dial>` reception (`HANDOFF_NUMBER`).
+- Outbound: `POST /plivo/outbound {"to":"98xxxxxxxx"}` (header `X-API-Key`). `PLIVO_MACHINE_DETECTION=true` voicemail pe turant kaat-ta hai.
+- Hangup callback se `durationSeconds`, `hangupCause`, `callCost` (Plivo TotalCost) CallLog me — per-call cost report.
+
+Exotel bhi chalta rahega (`/exotel/media`); dono ek hi server pe.
+
 ## Setup
 
 ```bash
 cp .env.example .env     # values bharo
 npm install
-npm test                 # 21 tests: booking rules + simulated Exotel calls (batch + streaming)
+npm test                 # 26 tests: booking rules + simulated Exotel & Plivo calls (batch + streaming)
 npm run dev
 ngrok http 3000          # local testing
 ```
@@ -74,6 +102,7 @@ Sirf `config/hospitalConfig.js` edit karo: doctors, din, shifts, fees, FAQ, gree
 
 - `GET /api/calls`: dashboard format
 - `GET /api/appointments`
+- `POST /plivo/outbound` `{ "to": "98xxxxxxxx" }`
 - `POST /exotel/outbound` `{ "to": "98xxxxxxxx" }`
 - `GET /health`: DB status + active calls (Render health check)
 

@@ -6,6 +6,7 @@ const connectDB = require("./config/db");
 
 const dataRoutes = require("./routes/dataRoutes");
 const exotelRoutes = require("./routes/exotelRoutes");
+const plivoRoutes = require("./routes/plivoRoutes");
 const { requireApiKey } = require("./middleware/auth");
 const { setupExotelWebSocketServer, PHRASES } = require("./services/exotelWsService");
 const { preWarmTTS, ttsStats } = require("./services/ttsService");
@@ -39,7 +40,7 @@ const server = http.createServer(app);
 server.keepAliveTimeout = 65_000;
 server.headersTimeout = 66_000;
 
-app.get("/", (req, res) => res.json({ status: "online", service: "AI Voice Receptionist", wsEndpoint: "/exotel/media" }));
+app.get("/", (req, res) => res.json({ status: "online", service: "AI Voice Receptionist", wsEndpoints: { exotel: "/exotel/media", plivo: "/plivo/media" }, plivoAnswerUrl: "/plivo/answer" }));
 
 app.get("/health", (req, res) => {
   const dbUp = mongoose.connection.readyState === 1;
@@ -53,6 +54,7 @@ app.get("/health", (req, res) => {
 });
 
 app.use("/exotel", exotelRoutes);
+app.use("/plivo", plivoRoutes);
 app.use("/api", requireApiKey, dataRoutes);
 
 setupExotelWebSocketServer(server);
@@ -62,7 +64,7 @@ connectDB()
   .then(() => {
     server.listen(PORT, () => {
       const domain = (process.env.BASE_URL || `localhost:${PORT}`).replace(/^https?:\/\//, "").replace(/\/$/, "");
-      console.log(`[server] listening on ${PORT} | Exotel stream URL: wss://${domain}/exotel/media`);
+      console.log(`[server] listening on ${PORT} | Exotel stream: wss://${domain}/exotel/media | Plivo answer URL: https://${domain}/plivo/answer`);
       // Greeting + fillers pehle se render => call uthte hi awaaz, LLM slow ho to filler turant
       preWarmTTS([PHRASES.greeting, ...PHRASES.fillers, ...PHRASES.reprompts, PHRASES.goodbye, PHRASES.handoff, PHRASES.timeLimit, PHRASES.sorry], [8000]).catch(
         (err) => console.warn("[server] TTS pre-warm failed (non-fatal):", err.message)

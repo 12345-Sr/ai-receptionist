@@ -1,5 +1,6 @@
 /**
- * Exotel Voicebot (bidirectional AgentStream) WebSocket handler.
+ * Call WebSocket handler — Exotel AgentStream (/exotel/media) aur Plivo Audio
+ * Streaming (/plivo/media). Protocol farq services/telephony.js me.
  *
  * Major fixes vs old version:
  *  1. Outbound audio 320-byte (20 ms) chunks me jaata tha. Exotel ka rule:
@@ -28,6 +29,7 @@ const { extractPatientNameFromSpeech, parseSpelledName, toEnglishName } = requir
 const { applyCallerTurn, applyAiDraft, isInvalidPatientName, classifyConfirmation } = require("../utils/nameState");
 const { getClock, relativeDayLabel } = require("./hospitalKnowledge");
 const { calculatePcmRms, analyzeVoiceActivity } = require("../utils/audioDsp");
+const { ADAPTERS, verifyStream } = require("./telephony");
 
 const heuristics = { parseSpelledName, extractPatientNameFromSpeech };
 
@@ -86,40 +88,45 @@ function setupExotelWebSocketServer(httpServer, overrides = {}) {
   httpServer.activeCalls = new Set();
 
   httpServer.on("upgrade", (request, socket, head) => {
-    let pathname = "";
+    let url;
     try {
-      pathname = new URL(request.url, "http://x").pathname;
-    } catch {}
-    if (["/exotel/media", "/media", "/stream"].includes(pathname)) {
-      wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
-    } else {
-      socket.destroy();
+      url = new URL(request.url, "http://x");
+    } catch {
+      return socket.destroy();
     }
+    const makeAdapter = ADAPTERS[url.pathname];
+    if (!makeAdapter) return socket.destroy();
+    // Plivo: answer XML ne har call ke liye signed URL diya hai (?c=<CallUUID>&t=<hmac>)
+    if (url.pathname.startsWith("/plivo") && !verifyStream(url.searchParams.get("c"), url.searchParams.get("t"))) {
+      console.warn("[ws] rejected unsigned Plivo stream");
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      return socket.destroy();
+    }
+    wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, makeAdapter()));
   });
 
-  wss.on("connection", (ws) => handleCall(ws, deps, httpServer.activeCalls));
+  wss.on("connection", (ws, adapter) => handleCall(ws, deps, httpServer.activeCalls, adapter));
   return wss;
 }
 
-function handleCall(ws, deps, activeCalls) {
+function handleCall(ws, deps, activeCalls, adapter = ADAPTERS["/exotel/media"]()) {
   const { ai, tts, booking, CallLog } = deps;
   const db = (p) => Promise.resolve(p).catch((e) => console.error("[db]", e.message));
 
-  let streamSid = null;
   let callSid = null;
   let session = null;
   let sampleRate = 8000;
   let callStart = Date.now();
   let closed = false;
 
-  // Frame math (Exotel: >= 3200 bytes, multiple of 320)
+  // Frame math: ~100 ms, multiple of 320 (Exotel: >= 3200 bytes; Plivo: koi minimum nahi)
   let FRAME_BYTES = 3200;
   let FRAME_MS = 200;
   let LEAD_MS = 400;
   const setRate = (r) => {
     sampleRate = r;
     const bytesPer100ms = Math.round((r * 2 * 0.1) / 320) * 320;
-    FRAME_BYTES = Math.max(3200, bytesPer100ms);
+    FRAME_BYTES = Math.max(adapter.minFrameBytes, bytesPer100ms);
     FRAME_MS = (FRAME_BYTES / (r * 2)) * 1000;
     LEAD_MS = Math.max(400, FRAME_MS * 2);
   };
@@ -129,11 +136,11 @@ function handleCall(ws, deps, activeCalls) {
 
   // ------------------------------------------------------------ outbound
   const send = (obj) => {
-    if (ws.readyState === ws.OPEN && streamSid) ws.send(JSON.stringify({ ...obj, stream_sid: streamSid }));
+    if (obj && ws.readyState === ws.OPEN && adapter.ready()) ws.send(JSON.stringify(obj));
   };
-  const sendMedia = (buf) => send({ event: "media", media: { payload: buf.toString("base64") } });
-  const sendClear = () => send({ event: "clear" });
-  const sendMark = (name) => send({ event: "mark", mark: { name } });
+  const sendMedia = (buf) => send(adapter.media(buf, sampleRate));
+  const sendClear = () => send(adapter.clear());
+  const sendMark = (name) => send(adapter.mark(name));
 
   let current = null; // active playback
   let playSeq = 0;
@@ -646,6 +653,27 @@ function handleCall(ws, deps, activeCalls) {
     setTimeout(() => ws.close(1000, "handoff"), 300);
   }
 
+  /**
+   * Call poori tarah kaatna. Exotel: stream band = flow khatam. Plivo: Stream
+   * keepCallAlive=true hai (handoff ke liye <Dial> agla element ho sakta hai), isliye
+   * sirf WebSocket band karne se call reception pe chali jaati — REST se hangup karo.
+   */
+  async function hangup(reason) {
+    const { PLIVO_AUTH_ID: id, PLIVO_AUTH_TOKEN: tok } = process.env;
+    if (adapter.name === "plivo" && id && tok && callSid && !callSid.startsWith("PLV_")) {
+      try {
+        await fetch(`https://api.plivo.com/v1/Account/${id}/Call/${callSid}/`, {
+          method: "DELETE",
+          headers: { Authorization: "Basic " + Buffer.from(`${id}:${tok}`).toString("base64") },
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch (err) {
+        console.warn("[plivo] hangup failed:", err.message);
+      }
+    }
+    ws.close(1000, reason);
+  }
+
   // ------------------------------------------------------------ idle reprompt
   let idleTimer = null;
   function clearIdle() {
@@ -654,14 +682,14 @@ function handleCall(ws, deps, activeCalls) {
   }
   function armIdle() {
     clearIdle();
-    if (closed || handingOff || !streamSid) return;
+    if (closed || handingOff || !adapter.ready()) return;
     idleTimer = setTimeout(async () => {
       if (isBotSpeaking() || capturing || (inflight && !inflight.committed) || pendingText) return armIdle();
       if (reprompts >= CONF.maxReprompts) {
         log("💤 caller silent — ending");
         handingOff = true;
         await play(PHRASES.goodbye, { cacheable: true });
-        setTimeout(() => ws.close(1000, "silence"), 300);
+        setTimeout(() => hangup("silence"), 300);
         return;
       }
       const line = PHRASES.reprompts[reprompts++] || PHRASES.reprompts[0];
@@ -673,7 +701,7 @@ function handleCall(ws, deps, activeCalls) {
   // ------------------------------------------------------------ Exotel events
   async function fetchCallDetails() {
     const { EXOTEL_API_KEY: k, EXOTEL_API_TOKEN: t, EXOTEL_SID: sid } = process.env;
-    if (!k || !t || !sid || !callSid || callSid.startsWith("EXO_")) return;
+    if (adapter.name !== "exotel" || !k || !t || !sid || !callSid || callSid.startsWith("EXO_")) return;
     try {
       const res = await fetch(`https://api.exotel.com/v1/Accounts/${sid}/Calls/${callSid}.json`, {
         headers: { Authorization: "Basic " + Buffer.from(`${k}:${t}`).toString("base64") },
@@ -690,19 +718,17 @@ function handleCall(ws, deps, activeCalls) {
     }
   }
 
-  function onStart(data) {
-    const st = data.start || {};
-    streamSid = data.stream_sid || st.stream_sid;
-    callSid = st.call_sid || data.call_sid || `EXO_${Date.now()}`;
+  function onStart(ev) {
+    callSid = ev.callSid;
     callStart = Date.now();
-    const rate = parseInt(st.media_format?.sample_rate || 8000, 10);
-    if ([8000, 16000, 24000].includes(rate)) setRate(rate);
+    if ([8000, 16000, 24000].includes(ev.sampleRate)) setRate(ev.sampleRate);
     activeCalls.add(callSid);
 
     session = getSession(callSid);
-    const from = st.from || st.custom_parameters?.from || data.from;
-    if (from) session.callerPhone = from;
-    log(`📞 start from=${from || "?"} rate=${sampleRate} frame=${FRAME_BYTES}B`);
+    if (ev.from) session.callerPhone = ev.from;
+    // Plivo: number answer webhook se session me pehle hi aa chuka hota hai
+    const from = ev.from || session.callerPhone;
+    log(`📞 ${adapter.name} start from=${from || "?"} rate=${sampleRate} frame=${FRAME_BYTES}B`);
 
     if (!session.messages.length || session.messages[session.messages.length - 1].content !== PHRASES.greeting) {
       session.messages.push({ role: "assistant", content: PHRASES.greeting });
@@ -711,7 +737,8 @@ function handleCall(ws, deps, activeCalls) {
       CallLog.findOneAndUpdate(
         { callSid },
         {
-          $setOnInsert: { callSid, direction: "inbound", startedAt: new Date(), ...(from ? { from } : {}), ...(st.to ? { to: st.to } : {}) },
+          $setOnInsert: { callSid, direction: session.direction || "inbound", startedAt: new Date(), ...(from ? { from } : {}), ...(ev.to ? { to: ev.to } : {}) },
+          $set: { provider: adapter.name },
           $push: { transcript: { role: "assistant", text: PHRASES.greeting, timestamp: new Date() } },
         },
         { upsert: true }
@@ -735,7 +762,7 @@ function handleCall(ws, deps, activeCalls) {
     log("⏱️  max call duration — wrapping up");
     handingOff = true;
     db(CallLog.updateOne({ callSid }, { $set: { endReason: "max_duration" } }));
-    play(PHRASES.timeLimit, { cacheable: true }).then(() => setTimeout(() => ws.close(1000, "max_duration"), 300));
+    play(PHRASES.timeLimit, { cacheable: true }).then(() => setTimeout(() => hangup("max_duration"), 300));
   }
 
   function finishCall(reason) {
@@ -768,31 +795,27 @@ function handleCall(ws, deps, activeCalls) {
     } catch {
       return;
     }
-    switch (data.event) {
-      case "connected":
-        break;
+    const ev = adapter.parse(data);
+    if (!ev) return;
+    switch (ev.type) {
       case "start":
-        onStart(data);
+        onStart(ev);
         break;
       case "media":
-        if (session && data.media?.payload) onAudio(Buffer.from(data.media.payload, "base64"));
+        if (session) onAudio(ev.payload);
         break;
-      case "mark": {
-        const name = data.mark?.name;
-        if (current && name === `p${current.id}` && current.ttsDone && !current.pending.length) current.finish(true);
+      case "mark":
+        if (current && ev.name === `p${current.id}` && current.ttsDone && !current.pending.length) current.finish(true);
         break;
-      }
-      case "dtmf": {
-        const digit = data.dtmf?.digit;
-        log(`🔢 DTMF ${digit}`);
-        if (digit === "0" && CONF.handoff && !handingOff) {
+      case "dtmf":
+        log(`🔢 DTMF ${ev.digit}`);
+        if (ev.digit === "0" && CONF.handoff && !handingOff) {
           stopPlayback("dtmf");
           handoff("dtmf_0");
         }
         break;
-      }
       case "stop":
-        finishCall(data.stop?.reason || "stop");
+        finishCall(ev.reason);
         break;
     }
   });

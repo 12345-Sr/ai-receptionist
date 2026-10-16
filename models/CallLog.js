@@ -29,6 +29,10 @@ const callLogSchema = new mongoose.Schema(
     appointmentBooked: { type: Boolean, default: false },
     flagged: String, // "emergency"
     handoff: String, // "caller_request" | "dtmf_0"
+    provider: { type: String, enum: ["exotel", "plivo"] },
+    endReason: String, // "max_duration" ...
+    hangupCause: String, // Plivo hangup callback
+    callCost: Number, // Plivo TotalCost (USD) — per-call cost report
     startedAt: { type: Date, default: Date.now },
     endedAt: Date,
     durationSeconds: Number,
