@@ -39,10 +39,14 @@ const CONF = {
   bargeInMs: num(process.env.BARGE_IN_MS, 300),
   bargeInGraceMs: num(process.env.BARGE_IN_GRACE_MS, 500),
   fillerAfterMs: num(process.env.FILLER_AFTER_MS, 1300),
-  idleRepromptMs: num(process.env.IDLE_REPROMPT_MS, 9000),
+  idleRepromptMs: num(process.env.IDLE_REPROMPT_MS, 7000),
   maxReprompts: num(process.env.MAX_REPROMPTS, 2),
   echoCooldownMs: num(process.env.ECHO_COOLDOWN_MS, 250),
   handoff: process.env.HUMAN_HANDOFF === "true",
+  // Smooth: LLM stream karo aur pehla vaakya aate hi bolo
+  streamLlm: process.env.LLM_STREAM !== "false",
+  // Cost guard: ek call kitni der max (Exotel per-minute + har turn ka LLM/TTS)
+  maxCallSec: num(process.env.MAX_CALL_SECONDS, 420),
 };
 
 const PHRASES = {
@@ -54,7 +58,12 @@ const PHRASES = {
   emergency: hospitalConfig.emergencyReply,
   emergencyFollowUp: "और अगर अभी हालत ठीक है, तो मैं डॉक्टर की अपॉइंटमेंट भी बुक कर सकती हूँ।",
   handoff: hospitalConfig.handoffReply,
+  timeLimit: "माफ़ कीजिए, कॉल का समय पूरा हो रहा है। बाकी जानकारी के लिए आप दोबारा कॉल कर सकते हैं। धन्यवाद!",
 };
+
+// LLM ne caller ki "haan" ke bina hi "बुक कर रही हूँ" bola => stream me turant mat bolo,
+// pehle server booking guard chalne do.
+const BOOKING_PHRASE_RE = /बुक\s*कर\s*(?:रही|दी|दिया|दूँगी)|पक्की|कन्फ़र्म|confirm/i;
 
 const EMERGENCY_RE =
   /(?:सीने|छाती)\s*में\s*(?:बहुत\s*)?(?:तेज़?|भयंकर)\s*दर्द|हार्ट\s*अटैक|heart\s*attack|(?:सांस|साँस)\s*(?:नहीं\s*(?:आ|ले)|लेने\s*में\s*(?:बहुत\s*)?(?:दिक्कत|तकलीफ))|बेहोश|unconscious|एक्सीडेंट|accident|दुर्घटना|खून\s*(?:बह|निकल)|लकवा|स्ट्रोक|stroke|ज़हर|जहर\s*खा|दौरा\s*पड़|suicide|आत्महत्या/i;
@@ -131,12 +140,35 @@ function handleCall(ws, deps, activeCalls) {
   let cooldownUntil = 0;
   const isBotSpeaking = () => Boolean(current);
 
-  function play(text, { cacheable = false } = {}) {
-    if (!text || closed) return Promise.resolve(false);
+  /**
+   * Playback = text segments ki queue. Pehla vaakya synthesize hote hi bolna shuru,
+   * baaki vaakya peeche-peeche (LLM stream se) aate rehte hain. Ek hi Exotel "mark"
+   * aakhir me.
+   *   const pb = startPlayback(); pb.push("पहला वाक्य।"); pb.push("दूसरा।"); pb.end();
+   */
+  function startPlayback({ cacheable = false } = {}) {
+    if (closed) {
+      const dead = { push() {}, end() {}, done: Promise.resolve(false), finished: true };
+      return dead;
+    }
     if (current) stopPlayback("replaced");
     clearIdle();
     const id = ++playSeq;
-    const p = { id, ac: new AbortController(), pending: Buffer.alloc(0), sentMs: 0, startAt: 0, ttsDone: false, finished: false, startedAt: Date.now(), text };
+    const p = {
+      id,
+      ac: new AbortController(),
+      pending: Buffer.alloc(0),
+      sentMs: 0,
+      playEnd: 0, // virtual playhead: Exotel kab tak bajaega (ms epoch)
+      ttsDone: false,
+      finished: false,
+      startedAt: Date.now(),
+      queue: [],
+      texts: [],
+      ended: false,
+      working: false,
+      onStop: null,
+    };
     current = p;
     let resolveDone;
     p.done = new Promise((r) => (resolveDone = r));
@@ -158,46 +190,72 @@ function handleCall(ws, deps, activeCalls) {
       if (p.finished) return;
       const now = Date.now();
       while (p.pending.length >= FRAME_BYTES || (p.ttsDone && p.pending.length > 0)) {
-        const ahead = p.startAt ? p.sentMs - (now - p.startAt) : 0;
-        if (ahead > LEAD_MS) break;
+        if (p.playEnd - now > LEAD_MS) break;
         let frame = p.pending.subarray(0, FRAME_BYTES);
         p.pending = p.pending.subarray(frame.length);
         if (frame.length < FRAME_BYTES) frame = Buffer.concat([frame, Buffer.alloc(FRAME_BYTES - frame.length)]);
-        if (!p.startAt) p.startAt = now;
         sendMedia(frame);
+        // Vaakyon ke beech TTS late ho to playhead "abhi" se aage badhta hai (gap ka sahi hisaab)
+        p.playEnd = Math.max(p.playEnd, now) + FRAME_MS;
         p.sentMs += FRAME_MS;
       }
       if (p.ttsDone && !p.pending.length && !p.endTimer) {
         if (!p.sentMs) return p.finish(false);
         sendMark(`p${id}`);
-        const remaining = Math.max(0, p.sentMs - (Date.now() - p.startAt));
+        const remaining = Math.max(0, p.playEnd - Date.now());
         p.endTimer = setTimeout(() => p.finish(true), remaining + 200);
       }
     };
     p.timer = setInterval(pump, 20);
 
-    log(`🤖 "${text}"`);
-    tts
-      .speakToPcm(text, sampleRate, {
-        signal: p.ac.signal,
-        cacheable,
-        onChunk: async (b) => {
-          if (p.finished) return;
-          p.pending = p.pending.length ? Buffer.concat([p.pending, b]) : b;
-          pump();
-        },
-      })
-      .then((bytes) => {
-        if (!bytes && !p.ac.signal.aborted) console.error("[tts] all engines failed for:", text);
-      })
-      .catch((err) => {
-        if (!p.ac.signal.aborted) console.error("[tts] error:", err.message);
-      })
-      .finally(() => {
+    const onChunk = async (b) => {
+      if (p.finished) return;
+      p.pending = p.pending.length ? Buffer.concat([p.pending, b]) : b;
+      pump();
+    };
+
+    const work = async () => {
+      if (p.working) return;
+      p.working = true;
+      while (p.queue.length && !p.finished) {
+        const text = p.queue.shift();
+        p.texts.push(text);
+        log(`🤖 "${text}"`);
+        try {
+          const bytes = await tts.speakToPcm(text, sampleRate, { signal: p.ac.signal, cacheable, onChunk });
+          if (!bytes && !p.ac.signal.aborted) console.error("[tts] all engines failed for:", text);
+        } catch (err) {
+          if (!p.ac.signal.aborted) console.error("[tts] error:", err.message);
+        }
+      }
+      p.working = false;
+      if (p.ended && !p.queue.length) {
         p.ttsDone = true;
         pump();
-      });
+      }
+    };
 
+    p.push = (text) => {
+      if (p.finished || p.ended || !text) return;
+      p.queue.push(text);
+      work();
+    };
+    p.end = () => {
+      if (p.ended) return;
+      p.ended = true;
+      if (!p.working && !p.queue.length) {
+        p.ttsDone = true;
+        pump();
+      }
+    };
+    return p;
+  }
+
+  function play(text, opts = {}) {
+    if (!text || closed) return Promise.resolve(false);
+    const p = startPlayback(opts);
+    p.push(text);
+    p.end();
     return p.done;
   }
 
@@ -208,6 +266,7 @@ function handleCall(ws, deps, activeCalls) {
     p.ac.abort();
     sendClear();
     p.finish(false);
+    if (p.onStop) p.onStop(reason);
   }
 
   // ------------------------------------------------------------ inbound VAD
@@ -348,6 +407,12 @@ function handleCall(ws, deps, activeCalls) {
     }
 
     applyCallerTurn(session, userText, heuristics);
+    if (CONF.streamLlm && typeof ai.streamAIReply === "function") return respondStreaming(turn, userText);
+    return respondBatch(turn, userText);
+  }
+
+  /** Purana tareeka: poora LLM jawab aane ke baad bolo (LLM_STREAM=false ya stub AI). */
+  async function respondBatch(turn, userText) {
 
     let fillerPlayback = null;
     const fillerTimer = setTimeout(() => {
@@ -390,6 +455,93 @@ function handleCall(ws, deps, activeCalls) {
     if (fillerPlayback) await fillerPlayback; // filler ko beech me mat kaato
     if (inflight !== turn || closed) return;
     await play(speech);
+  }
+
+  /**
+   * Streaming: LLM ka har poora vaakya aate hi TTS queue me. Caller ko pehla shabd
+   * ~ (LLM first sentence + TTS first chunk) me sunai deta hai, poore jawab ka intezaar nahi.
+   */
+  async function respondStreaming(turn, userText) {
+    const said = [];
+    const held = [];
+    const callerSaidYes = classifyConfirmation(userText) === "yes";
+    let fillerPlayback = null;
+    let gotSpeech = false;
+    let pbPromise = null;
+    const alive = () => !turn.ac.signal.aborted && inflight === turn && !closed;
+
+    const fillerTimer = setTimeout(() => {
+      if (!gotSpeech && alive() && !isBotSpeaking() && !capturing) {
+        fillerPlayback = play(PHRASES.fillers[Math.floor(Math.random() * PHRASES.fillers.length)], { cacheable: true });
+      }
+    }, CONF.fillerAfterMs);
+
+    // Playback lazily: filler chal raha ho to use poora hone do, phir asli jawab
+    const getPb = () =>
+      pbPromise ||
+      (pbPromise = (async () => {
+        if (fillerPlayback) await fillerPlayback;
+        if (!alive()) return null;
+        const pb = startPlayback();
+        // Caller beech me bola (barge-in) => LLM stream bhi band, paise bachao
+        pb.onStop = () => turn.ac.abort();
+        return pb;
+      })());
+    const speak = (s) => {
+      if (!turn.committed) commitUser(turn, userText);
+      said.push(s);
+      getPb().then((pb) => pb && pb.push(s));
+    };
+
+    const onSpeech = (s) => {
+      if (!alive()) return;
+      gotSpeech = true;
+      clearTimeout(fillerTimer);
+      if (held.length || (!callerSaidYes && BOOKING_PHRASE_RE.test(s))) held.push(s);
+      else speak(s);
+    };
+
+    let raw = null;
+    try {
+      const availabilityText = await booking.getAllAvailabilityText();
+      raw = await ai.streamAIReply([...session.messages, { role: "user", content: userText }], session, {
+        signal: turn.ac.signal,
+        availabilityText,
+        onSpeech,
+      });
+    } catch (err) {
+      if (!turn.ac.signal.aborted) console.error("[ai]", err.message);
+    }
+    clearTimeout(fillerTimer);
+
+    if (!alive()) {
+      // Barge-in: jitna bola ja chuka woh history me rahe (LLM ko context mile)
+      if (turn.committed && said.length) commitAssistant(said.join(" ") + " …");
+      return;
+    }
+    if (!turn.committed) commitUser(turn, userText);
+
+    const { speech: fullSpeech, draft, booking: bookReq } = ai.parseReply(raw || "");
+    applyDraft(draft);
+
+    let tail = [];
+    if (bookReq) {
+      try {
+        tail = [await handleBooking(bookReq, held.join(" ") || fullSpeech, userText)];
+      } catch (err) {
+        console.error("[booking] error:", err.message);
+        tail = ["माफ़ कीजिए, अभी बुकिंग सेव नहीं हो पाई। थोड़ी देर में दोबारा कॉल कर लीजिए, या मैं रिसेप्शन का नंबर बता दूँ?"];
+      }
+    } else if (held.length) tail = held;
+    else if (!said.length) tail = [fullSpeech || PHRASES.sorry];
+
+    if (!alive()) return;
+    for (const t of tail.filter(Boolean)) speak(t);
+    commitAssistant(said.join(" "));
+    const pb = await getPb();
+    if (!pb) return;
+    pb.end();
+    await pb.done;
   }
 
   function commitUser(turn, text) {
@@ -567,12 +719,30 @@ function handleCall(ws, deps, activeCalls) {
     );
     if (!from) fetchCallDetails();
     play(PHRASES.greeting, { cacheable: true });
+    if (CONF.maxCallSec > 0) maxTimer = setTimeout(wrapUpForTime, CONF.maxCallSec * 1000);
+  }
+
+  // Cost guard: lambi/atki hui call (bot loop, caller phone rakhna bhool gaya) ko
+  // politely band karo. Booking/jawab beech me ho to 20 s tak intezaar.
+  let maxTimer = null;
+  function wrapUpForTime(waitedMs = 0) {
+    if (closed || handingOff) return;
+    const busy = isBotSpeaking() || capturing || (inflight && !inflight.committed) || pendingText;
+    if (busy && waitedMs < 20000) {
+      maxTimer = setTimeout(() => wrapUpForTime(waitedMs + 1000), 1000);
+      return;
+    }
+    log("⏱️  max call duration — wrapping up");
+    handingOff = true;
+    db(CallLog.updateOne({ callSid }, { $set: { endReason: "max_duration" } }));
+    play(PHRASES.timeLimit, { cacheable: true }).then(() => setTimeout(() => ws.close(1000, "max_duration"), 300));
   }
 
   function finishCall(reason) {
     if (closed) return;
     closed = true;
     clearIdle();
+    clearTimeout(maxTimer);
     if (current) {
       current.ac.abort();
       current.finish(false);

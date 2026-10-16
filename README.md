@@ -8,16 +8,34 @@ Caller ──PSTN──► Exotel number ──► Voicebot applet ──wss─�
      ┌───────────── caller audio (8 kHz PCM) ◄───────────┤
      │  VAD + barge-in + end-of-turn (utils/audioDsp)     │
      ▼                                                    │
-  Groq Whisper STT ──► LLM (Groq → Gemini fallback)       │
-                         │  speech + DRAFT/BOOKING tags   │
+  STT: Groq Whisper-turbo ⇄ Sarvam Saaras (fallback)      │
+                         ▼                                │
+  LLM STREAM (Groq → Gemini) ──► har poora vaakya turant ─┤
+                         │  DRAFT/BOOKING tags (bole nahi jaate)
                          ▼                                │
                  bookingService (server validation,       │
                  slot capacity, doctor days, idempotent)  │
                          ▼                                │
-         TTS: ElevenLabs stream → Sarvam → Edge ──► ≥3200-byte frames
+  TTS queue: Sarvam stream → ElevenLabs → Edge, LRU cache ──► ≥3200-byte frames
 ```
 
-## Is version mein kya badla (v2)
+## v3: smooth + sasta
+
+| Area | v2 | v3 |
+|---|---|---|
+| Bolna kab shuru | Poora LLM jawab + JSON aane ke baad | LLM stream; **pehla vaakya aate hi** TTS (har turn ~0.5–1.5 s kam chup) |
+| Barge-in | Audio rukta tha, LLM chalta rehta tha | Audio + LLM stream dono band (bekaar tokens nahi) |
+| TTS engine | ElevenLabs pehle (sabse mehenga) | `TTS_ENGINES` order; default **Sarvam Bulbul streaming** (Hindi voice, kaafi sasta) |
+| TTS cache | Sirf greeting/fillers | Har chhota vaakya (≤60 chars) LRU cache — repeat = free + instant |
+| Prompt | Ghadi beech me => har minute cache miss | Static pehle, dynamic aakhir => Groq/Gemini prefix cache hit |
+| STT | Sirf Groq Whisper | `STT_PROVIDER` groq/sarvam + auto fallback; default turbo |
+| Lambi call | Koi limit nahi | `MAX_CALL_SECONDS` (default 7 min) politely band |
+| Silence | 9 s reprompt | 7 s (dead line pe Exotel minute bachao) |
+| `/health` | DB + calls | + TTS cache hits/misses, active engines |
+
+`LLM_STREAM=false` se purana behaviour wapas.
+
+## v2 mein kya badla
 
 | Area | Pehle | Ab |
 |---|---|---|
@@ -38,7 +56,7 @@ Caller ──PSTN──► Exotel number ──► Voicebot applet ──wss─�
 ```bash
 cp .env.example .env     # values bharo
 npm install
-npm test                 # 13 tests: booking rules + simulated Exotel calls
+npm test                 # 21 tests: booking rules + simulated Exotel calls (batch + streaming)
 npm run dev
 ngrok http 3000          # local testing
 ```
@@ -66,4 +84,5 @@ Sirf `config/hospitalConfig.js` edit karo: doctors, din, shifts, fees, FAQ, gree
 ## Known limits
 
 - Sessions in-memory hain: ek hi instance chalao (ya Redis mein le jao).
-- STT abhi batch Whisper hai. Agla bada latency jump streaming STT (Deepgram / Sarvam / Google Chirp streaming) se milega.
+- STT abhi bhi utterance-batch hai (caller chup hone ke baad). Agla latency jump: Sarvam/Deepgram **streaming STT** (WebSocket) — caller bolte-bolte transcript.
+- Sarvam stream `linear16` output: WAV header aaye to code khud hatata hai. Speaker naam model ke hisaab se badalte hain (v3 vs v4-flash) — console me test karke set karo.

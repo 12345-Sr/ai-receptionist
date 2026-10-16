@@ -49,10 +49,24 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.5-flash-lite
+      - key: STT_MODEL
+        value: whisper-large-v3-turbo
+      - key: LLM_STREAM
+        value: "true"
+      - key: TTS_ENGINES
+        value: sarvam,elevenlabs,edge
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: SARVAM_MODEL
+        value: bulbul:v3
+      - key: SARVAM_SPEAKER
+        value: priya
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: ELEVENLABS_VOICE_ID
         value: EXAVITQu4vr4xnSDxMaL
+      - key: MAX_CALL_SECONDS
+        value: "420"
       - key: TTS_VOICE
         value: hi-IN-SwaraNeural
       - key: SLOT_CAPACITY

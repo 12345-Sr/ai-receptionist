@@ -8,7 +8,7 @@ const dataRoutes = require("./routes/dataRoutes");
 const exotelRoutes = require("./routes/exotelRoutes");
 const { requireApiKey } = require("./middleware/auth");
 const { setupExotelWebSocketServer, PHRASES } = require("./services/exotelWsService");
-const { preWarmTTS } = require("./services/ttsService");
+const { preWarmTTS, ttsStats } = require("./services/ttsService");
 
 // Ek call ka unhandled error poore server (aur baaki live calls) ko na gira de
 process.on("unhandledRejection", (reason) => console.error("[server] Unhandled rejection:", reason));
@@ -48,6 +48,7 @@ app.get("/health", (req, res) => {
     db: dbUp ? "connected" : "disconnected",
     activeCalls: server.activeCalls ? server.activeCalls.size : 0,
     uptimeSec: Math.round(process.uptime()),
+    tts: ttsStats(),
   });
 });
 
@@ -63,7 +64,7 @@ connectDB()
       const domain = (process.env.BASE_URL || `localhost:${PORT}`).replace(/^https?:\/\//, "").replace(/\/$/, "");
       console.log(`[server] listening on ${PORT} | Exotel stream URL: wss://${domain}/exotel/media`);
       // Greeting + fillers pehle se render => call uthte hi awaaz, LLM slow ho to filler turant
-      preWarmTTS([PHRASES.greeting, ...PHRASES.fillers, ...PHRASES.reprompts, PHRASES.goodbye, PHRASES.handoff], [8000]).catch(
+      preWarmTTS([PHRASES.greeting, ...PHRASES.fillers, ...PHRASES.reprompts, PHRASES.goodbye, PHRASES.handoff, PHRASES.timeLimit, PHRASES.sorry], [8000]).catch(
         (err) => console.warn("[server] TTS pre-warm failed (non-fatal):", err.message)
       );
     });

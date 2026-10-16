@@ -82,7 +82,8 @@ const { cleanAndIsolateVoice } = require("../utils/audioDsp");
 /**
  * Transcribes audio buffer using Groq Whisper after deep DSP voice isolation and noise gating.
  */
-async function transcribePcmAudio(pcmBuffer, sampleRate = 8000, { signal } = {}) {
+async function transcribeGroq(pcmBuffer, sampleRate = 8000, { signal } = {}) {
+  if (!process.env.GROQ_API_KEY) return null;
   // Discard audio shorter than 0.35 seconds (line noise, clicks, breaths)
   const minBytes = Math.floor(sampleRate * 2 * 0.35);
   if (!pcmBuffer || pcmBuffer.length < minBytes) {
@@ -96,7 +97,7 @@ async function transcribePcmAudio(pcmBuffer, sampleRate = 8000, { signal } = {})
   const formData = new FormData();
   formData.append("file", blob, "audio.wav");
   // whisper-large-v3 = Hindi me zyada accurate; "-turbo" = tez. Env se chuno.
-  formData.append("model", process.env.STT_MODEL || "whisper-large-v3");
+  formData.append("model", process.env.STT_MODEL || "whisper-large-v3-turbo");
   formData.append("language", "hi");
   formData.append("temperature", "0");
   formData.append(
@@ -117,8 +118,8 @@ async function transcribePcmAudio(pcmBuffer, sampleRate = 8000, { signal } = {})
 
     if (!res.ok) {
       const errText = await res.text();
-      console.error(`[sttService] Groq Whisper error ${res.status}:`, errText);
-      return "";
+      console.error(`[sttService] Groq Whisper error ${res.status}:`, errText.slice(0, 200));
+      return null;
     }
 
     const data = await res.json();
@@ -151,9 +152,61 @@ async function transcribePcmAudio(pcmBuffer, sampleRate = 8000, { signal } = {})
 
     return text;
   } catch (err) {
+    if (signal?.aborted) return "";
     console.error("[sttService] Transcription error:", err.message);
-    return "";
+    return null;
   }
+}
+
+
+/**
+ * Sarvam Saaras (Indian languages, 8 kHz telephony ke liye tuned, per-second billing).
+ * Whisper ke "subscribe/thank you" jaise silence-hallucinations isme kam aate hain.
+ */
+async function transcribeSarvam(pcmBuffer, sampleRate = 8000, { signal } = {}) {
+  const apiKey = process.env.SARVAM_API_KEY;
+  if (!apiKey) return null;
+  const minBytes = Math.floor(sampleRate * 2 * 0.35);
+  if (!pcmBuffer || pcmBuffer.length < minBytes) return "";
+  const wav = pcmToWav(cleanAndIsolateVoice(pcmBuffer, sampleRate), sampleRate);
+  const form = new FormData();
+  form.append("file", new Blob([wav], { type: "audio/wav" }), "audio.wav");
+  form.append("model", process.env.SARVAM_STT_MODEL || "saaras:v3");
+  form.append("mode", "transcribe");
+  form.append("language_code", process.env.SARVAM_STT_LANGUAGE || "hi-IN");
+  try {
+    const res = await fetch("https://api.sarvam.ai/speech-to-text", {
+      method: "POST",
+      headers: { "api-subscription-key": apiKey },
+      body: form,
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(6000)]) : AbortSignal.timeout(6000),
+    });
+    if (!res.ok) {
+      console.error(`[sttService] Sarvam STT ${res.status}:`, (await res.text().catch(() => "")).slice(0, 200));
+      return null;
+    }
+    const data = await res.json();
+    let text = String(data.transcript || "").trim();
+    text = cleanTelephonyHindi(text);
+    return text.length < 2 ? "" : text;
+  } catch (err) {
+    if (signal?.aborted) return "";
+    console.error("[sttService] Sarvam STT error:", err.message);
+    return null;
+  }
+}
+
+/**
+ * STT_PROVIDER=groq (default) | sarvam. Pehla fail ho (null) to doosra try.
+ * "" = sunai diya par bolne layak kuch nahi (fallback NAHI chalta — double cost bachao).
+ */
+async function transcribePcmAudio(pcmBuffer, sampleRate = 8000, opts = {}) {
+  const order = (process.env.STT_PROVIDER || "groq") === "sarvam" ? [transcribeSarvam, transcribeGroq] : [transcribeGroq, transcribeSarvam];
+  for (const fn of order) {
+    const text = await fn(pcmBuffer, sampleRate, opts);
+    if (text !== null) return text;
+  }
+  return "";
 }
 
 module.exports = { pcmToWav, transcribePcmAudio, cleanTelephonyHindi };

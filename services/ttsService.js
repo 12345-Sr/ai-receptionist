@@ -1,7 +1,12 @@
 /**
  * Text -> 16-bit mono PCM at the call's sample rate.
  *
- * Engines (in order): ElevenLabs (streaming) -> Sarvam -> Microsoft Edge (free).
+ * Engines: order TTS_ENGINES env se (default: sarvam,elevenlabs,edge).
+ *  - Sarvam Bulbul: Indian Hindi voice, HTTP streaming, ElevenLabs se ~5-10x sasta.
+ *  - ElevenLabs Flash: sabse natural, sabse mehenga — premium clients ke liye.
+ *  - Microsoft Edge: free, lekin unofficial endpoint (kabhi bhi band ho sakta hai) —
+ *    sirf aakhri fallback.
+ * Jis engine ki API key nahi, woh apne aap skip.
  *
  * Fixes vs old version:
  *  - ElevenLabs hamesha `pcm_8000` maangta tha, chahe call 16 kHz ho -> awaaz
@@ -180,6 +185,66 @@ async function synthElevenLabsStream(text, rate, { signal, onChunk }) {
   return total;
 }
 
+/**
+ * Sarvam HTTP stream: call ke sample rate (8k/16k) pe seedha linear16 => koi
+ * resample/decoding nahi, pehla audio jaldi. Agar stream endpoint fail ho to REST.
+ */
+const SARVAM_STREAM_RATES = [8000, 16000, 22050, 24000];
+async function synthSarvamStream(text, rate, { signal, onChunk }) {
+  const apiKey = process.env.SARVAM_API_KEY;
+  if (!apiKey) return 0;
+  const reqRate = SARVAM_STREAM_RATES.includes(rate) ? rate : 16000;
+  const body = {
+    text,
+    language_code: "hi-IN",
+    speaker: process.env.SARVAM_SPEAKER || "priya",
+    model: process.env.SARVAM_MODEL || "bulbul:v3",
+    output_audio_codec: "linear16",
+    speech_sample_rate: reqRate,
+    pace: Number(process.env.SARVAM_PACE || 1.0),
+  };
+  if (process.env.SARVAM_TEMPERATURE) body.temperature = Number(process.env.SARVAM_TEMPERATURE);
+  const res = await fetch("https://api.sarvam.ai/text-to-speech/stream", {
+    method: "POST",
+    headers: { "api-subscription-key": apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000),
+  });
+  if (!res.ok || !res.body) {
+    console.warn(`[tts] Sarvam stream ${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`);
+    return 0;
+  }
+
+  let total = 0;
+  let head = Buffer.alloc(0); // WAV header ho to hatana hai
+  let headerDone = false;
+  let carry = Buffer.alloc(0);
+  for await (const part of res.body) {
+    let buf = Buffer.from(part);
+    if (!headerDone) {
+      head = Buffer.concat([head, buf]);
+      if (head.length < 12) continue;
+      if (head.toString("ascii", 0, 4) === "RIFF") {
+        const d = head.indexOf("data");
+        if (d < 0 || head.length < d + 8) continue; // header abhi poora nahi aaya
+        buf = head.subarray(d + 8);
+      } else buf = head;
+      headerDone = true;
+    }
+    buf = carry.length ? Buffer.concat([carry, buf]) : buf;
+    const even = buf.length - (buf.length % 2);
+    carry = buf.subarray(even);
+    buf = buf.subarray(0, even);
+    if (!buf.length) continue;
+    const out = reqRate === rate ? buf : floatToPcm(int16BufToFloat(buf), reqRate, rate);
+    total += out.length;
+    await onChunk(out);
+    if (signal?.aborted) break;
+  }
+  return total;
+}
+
+/** Sarvam REST (non-stream) fallback — v2 aur v3 dono ke liye */
 async function synthSarvam(text, rate, signal) {
   const apiKey = process.env.SARVAM_API_KEY;
   if (!apiKey) return null;
@@ -187,13 +252,12 @@ async function synthSarvam(text, rate, signal) {
     method: "POST",
     headers: { "api-subscription-key": apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
-      inputs: [text],
+      text,
       target_language_code: "hi-IN",
-      speaker: process.env.SARVAM_SPEAKER || "anushka",
-      model: process.env.SARVAM_MODEL || "bulbul:v2",
-      pace: 1.0,
+      speaker: process.env.SARVAM_SPEAKER || "priya",
+      model: process.env.SARVAM_MODEL || "bulbul:v3",
+      pace: Number(process.env.SARVAM_PACE || 1.0),
       speech_sample_rate: rate,
-      enable_preprocessing: true,
     }),
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(6000)]) : AbortSignal.timeout(6000),
   });
@@ -240,8 +304,45 @@ async function synthEdge(text, rate) {
 }
 
 // ---------------------------------------------------------------- public API
+/**
+ * Cache (COST + speed): greeting/fillers ke alawa har CHHOTA vaakya bhi cache hota
+ * hai ("ठीक है।", "जी, बोलिए।", "मरीज़ का नाम बताइए?") — ye calls me baar-baar
+ * aate hain. Cache hit = 0 TTS cost, 0 ms latency. LRU, bytes se limited.
+ */
 const cache = new Map(); // `${rate}|${text}` -> Buffer
-const CACHE_MAX = 200;
+let cacheBytes = 0;
+const CACHE_MAX_BYTES = Number(process.env.TTS_CACHE_MB || 40) * 1024 * 1024;
+const AUTO_CACHE_CHARS = Number(process.env.TTS_AUTO_CACHE_CHARS || 60);
+const stats = { hits: 0, misses: 0, chars: 0 };
+
+function cacheGet(key) {
+  const buf = cache.get(key);
+  if (buf) {
+    cache.delete(key); // LRU: recent ko aakhir me
+    cache.set(key, buf);
+  }
+  return buf;
+}
+function cachePut(key, buf) {
+  if (cache.has(key) || buf.length > CACHE_MAX_BYTES / 4) return;
+  cache.set(key, buf);
+  cacheBytes += buf.length;
+  while (cacheBytes > CACHE_MAX_BYTES && cache.size) {
+    const [k, v] = cache.entries().next().value;
+    cache.delete(k);
+    cacheBytes -= v.length;
+  }
+}
+
+function engineOrder() {
+  const want = (process.env.TTS_ENGINES || "sarvam,elevenlabs,edge").split(",").map((x) => x.trim().toLowerCase());
+  const has = {
+    sarvam: Boolean(process.env.SARVAM_API_KEY),
+    elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY),
+    edge: process.env.TTS_DISABLE_EDGE !== "true",
+  };
+  return want.filter((e) => has[e]);
+}
 
 /**
  * Synthesize and deliver PCM via onChunk (streamed when possible).
@@ -251,46 +352,55 @@ async function speakToPcm(text, rate, { signal, onChunk, cacheable = false } = {
   const clean = sanitizeSpeechText(text);
   if (!clean) return 0;
   const key = `${rate}|${clean}`;
-  if (cache.has(key)) {
-    const buf = cache.get(key);
-    await onChunk(buf);
-    return buf.length;
+  const hit = cacheGet(key);
+  if (hit) {
+    stats.hits++;
+    await onChunk(hit);
+    return hit.length;
   }
+  stats.misses++;
+  const store = cacheable || clean.length <= AUTO_CACHE_CHARS;
 
   const collected = [];
+  let delivered = 0;
   const tap = async (b) => {
-    if (cacheable) collected.push(b);
+    if (store) collected.push(b);
+    delivered += b.length;
     await onChunk(b);
   };
 
   let bytes = 0;
-  if (process.env.ELEVENLABS_API_KEY) {
+  for (const engine of engineOrder()) {
+    if (bytes || signal?.aborted) break;
+    // Kisi engine ne aadha audio bhej ke fail kiya => doosre se dobara poora mat bolo
+    if (delivered) break;
     try {
-      bytes = await synthElevenLabsStream(clean, rate, { signal, onChunk: tap });
+      if (engine === "sarvam") {
+        bytes = await synthSarvamStream(clean, rate, { signal, onChunk: tap });
+        if (!bytes && !delivered && !signal?.aborted) {
+          const pcm = await synthSarvam(clean, rate, signal);
+          if (pcm?.length) { await tap(pcm); bytes = pcm.length; }
+        }
+      } else if (engine === "elevenlabs") {
+        bytes = await synthElevenLabsStream(clean, rate, { signal, onChunk: tap });
+      } else if (engine === "edge") {
+        const pcm = await synthEdge(clean, rate);
+        if (pcm?.length && !signal?.aborted) { await tap(pcm); bytes = pcm.length; }
+      }
+      if (bytes) stats.chars += clean.length;
     } catch (err) {
-      if (signal?.aborted) return 0;
-      console.warn("[tts] ElevenLabs error:", err.message);
+      if (signal?.aborted) return delivered;
+      console.warn(`[tts] ${engine} error:`, err.message);
     }
   }
-  if (!bytes && process.env.SARVAM_API_KEY) {
-    try {
-      const pcm = await synthSarvam(clean, rate, signal);
-      if (pcm?.length) { await tap(pcm); bytes = pcm.length; }
-    } catch (err) {
-      if (signal?.aborted) return 0;
-      console.warn("[tts] Sarvam error:", err.message);
-    }
-  }
-  if (!bytes && !signal?.aborted) {
-    const pcm = await synthEdge(clean, rate);
-    if (pcm?.length) { await tap(pcm); bytes = pcm.length; }
-  }
+  bytes = bytes || delivered;
 
-  if (cacheable && bytes && !signal?.aborted) {
-    if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value);
-    cache.set(key, Buffer.concat(collected));
-  }
+  if (store && bytes && !signal?.aborted) cachePut(key, Buffer.concat(collected));
   return bytes;
+}
+
+function ttsStats() {
+  return { ...stats, cacheEntries: cache.size, cacheMB: +(cacheBytes / 1048576).toFixed(1), engines: engineOrder() };
 }
 
 /** Non-streaming helper (tests / scripts). */
@@ -312,4 +422,4 @@ async function preWarmTTS(phrases = [], rates = [8000]) {
   console.log(`[tts] Pre-warmed ${ok}/${phrases.length * rates.length} phrases`);
 }
 
-module.exports = { speakToPcm, textToPcm, preWarmTTS, sanitizeSpeechText, wavToPcm, floatToPcm };
+module.exports = { speakToPcm, textToPcm, preWarmTTS, sanitizeSpeechText, wavToPcm, floatToPcm, ttsStats, engineOrder };
