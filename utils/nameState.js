@@ -26,27 +26,45 @@ const B = "(?<![\\u0900-\\u097Fa-z])"; // word start
 const E = "(?![\\u0900-\\u097Fa-z])"; // word end
 const w = (alts) => new RegExp(`${B}(?:${alts})${E}`, "i");
 
-const NEG_WORD = w("नहीं|नही|ना|गलत|ग़लत|wrong|no|nope|nahi|galat");
-const STRONG_NEG = /(?:गलत|ग़लत|wrong|galat|सही\s*नहीं|ठीक\s*नहीं|ये\s*नहीं|यह\s*नहीं|नाम\s*नहीं|नहीं\s*है\s*(?:मेरा|नाम)|नहीं\s*,?\s*(?:मेरा\s*नाम|नाम))/i;
-const AFF_WORD = w("हाँ|हां|हा|जी|जी\\s*हाँ|सही|ठीक|बिल्कुल|बिलकुल|यही|हांजी|हाँजी|yes|yeah|yep|correct|right|sure|haan|ha|ji|theek|sahi|ok|okay|ओके|कर\\s*दो|कर\\s*दीजिए");
-const COLLOQUIAL_YES = /(?:यही\s*(?:नाम\s*)?है|सही\s*है|ठीक\s*है|बिल्कुल\s*सही)/i; // "नहीं नहीं, सही है" = haan
+const STRONG_NEG =
+  /(?:गलत|ग़लत|wrong|galat|सही\s*नहीं|ठीक\s*नहीं|ये\s*नहीं|यह\s*नहीं|नाम\s*नहीं|नहीं\s*है|मत\s*कर(?:ो|ना)?|रहने\s*दो|कैंसिल|cancel|don'?t|no\s*don'?t|ना\s*ना|(?<![\u0900-\u097Fa-z])ना\s*(?:भाई|जी|मत|गलत|नहीं))/i;
+const NEG_WORD = w("नहीं|नही|ना|गलत|ग़लत|wrong|no|nope|nahi|nahin|galat");
+
+// Polite / request suffix "na" when combined with affirmative action: "कर दो ना", "हाँ ... ना"
+const POLITE_NA = /(?:कर\s*(?:दो|दीजिए|दीजिये|देना|दें|डालो)|हाँ|हां|haa?n?|kardo|kar\s*do)\s*ना(?![\\u0900-\\u097Fa-z])/i;
+
+const AFF_WORD = w(
+  "हाँ|हां|हा|जी|जी\\s*हाँ|जी\\s*हां|सही|ठीक|बिल्कुल|बिलकुल|यही|हांजी|हाँजी|yes|yeah|yep|yup|ya|sure|haan|ha|haa|han|ji|theek|sahi|ok|okay|alright|fine|done|ओके|" +
+  "कर\\s*दो|करदो|कर\\s*दीजिए|कर\\s*दीजिये|कर\\s*देना|करदेना|कर\\s*दें|करदें|करा\\s*दो|करवा\\s*दो|कर\\s*डालो|" +
+  "kardo|kar\\s*do|kar\\s*dena|kar\\s*dijiye|kardijiye|" +
+  "बुक\\s*कर\\s*(?:दो|दीजिए|दीजिये|देना|दें)?|बुकिंग\\s*कर\\s*(?:दो|दीजिए|दीजिये|देना|दें)?|book\\s*(?:kardo|kar\\s*do|it)?|booking\\s*(?:kardo|kar\\s*do)?|" +
+  "कन्फ़?र्म\\s*(?:कर\\s*(?:दो|दीजिए|दीजिये|देना|दें)?|है)?|confirm\\s*(?:kardo|kar\\s*do|it|ed)?|" +
+  "पक्का\\s*(?:कर\\s*दो|है)?|पक्की\\s*(?:कर\\s*दो|है)?|हूँ|हम्म|hmm+|hm"
+);
+
+const COLLOQUIAL_YES =
+  /(?:यही\s*(?:नाम\s*)?है|सही\s*है|ठीक\s*है|बिल्कुल\s*सही|कर\s*(?:दो|दीजिए|दीजिये|देना|दें|डालो)|(?:kardo|kar\s*do|confirm|book)(?:\s*na)?)/i;
 
 /** @returns "yes" | "no" | null (ambiguous / unrelated) */
 function classifyConfirmation(text) {
   const t = String(text || "").trim();
   if (!t) return null;
   if (STRONG_NEG.test(t)) return "no";
-  if (COLLOQUIAL_YES.test(t)) return "yes";
+  if (COLLOQUIAL_YES.test(t) && !/\b(?:nahi|no|गलत|नहीं)\b/i.test(t)) return "yes";
+  if (POLITE_NA.test(t) && !STRONG_NEG.test(t)) return "yes";
   const neg = NEG_WORD.test(t);
   const aff = AFF_WORD.test(t);
   if (neg && !aff) return "no";
   if (aff && !neg) return "yes";
-  if (neg && aff) return /^\s*जी\s*(नहीं|ना)/i.test(t) ? "no" : null;
+  if (neg && aff) {
+    if (POLITE_NA.test(t)) return "yes";
+    return /^\s*जी\s*(नहीं|ना)/i.test(t) ? "no" : null;
+  }
   return null;
 }
 
 const ASKED_CONFIRM_RE =
-  /(?:सही\s*है\s*[?]|क्या\s*यह\s*(?:नाम\s*)?सही|मैंने\s*आपका\s*नाम|नाम\s*नोट|बुक\s*कर\s*दूँ|बुक\s*कर\s*दूं|कन्फर्म|is\s*that\s*correct)/i;
+  /(?:सही\s*है\s*[?]|क्या\s*यह\s*(?:नाम\s*)?सही|मैंने\s*आपका\s*नाम|नाम\s*नोट|बुक\s*कर\s*(?:दूँ|दूं|दे|दें|ूँ|ूं)|बुकिंग\s*(?:कन्फ़?र्म|पक्की|कर\s*(?:दूँ|दूं|दे|दें))|कन्फ़?र्म|confirm|पक्की?\s*कर\s*(?:दूँ|दूं|दे|दें)|is\s*that\s*correct|shall\s*i\s*(?:book|confirm)|should\s*i\s*(?:book|confirm))/i;
 const ASKED_SPELL_RE = /(?:स्पेलिंग|spell)/i;
 const ASKED_NAME_RE =
   /(?:आपका\s*नाम|अपना\s*नाम|नाम\s*बताएं|नाम\s*बताओ|नाम\s*बताइए|नाम\s*क्या\s*है|your\s*name|full\s*name)/i;
@@ -125,7 +143,7 @@ function applyCallerTurn(session, callerText, heuristics) {
 
   // Name confirmation can ONLY happen when there is an actual recognized valid patient name
   if (wasAskedForConfirmation && session.patientName && !isInvalidPatientName(session.patientName)) {
-    if (isAffirmative) {
+    if (isAffirmative || (!isNegative && !wasAskedForName && !wasAskedForSpelling)) {
       session.nameConfirmed = true;
     } else if (isNegative) {
       session.nameConfirmed = false;
@@ -172,6 +190,15 @@ function applyAiDraft(session, draft, toEnglishName) {
     session.patientName = toEnglishName(draft.patientName);
   }
 
+  // If AI draft confirms the name and we have a valid patient name, freeze it
+  if (
+    draft.nameConfirmed &&
+    session.patientName &&
+    !isInvalidPatientName(session.patientName)
+  ) {
+    session.nameConfirmed = true;
+  }
+
   // Safety invariant: name can NEVER be marked confirmed if patientName is missing or invalid!
   if (session.nameConfirmed && isInvalidPatientName(session.patientName)) {
     session.nameConfirmed = false;
@@ -186,4 +213,11 @@ function finalizeBookingName(session, booking) {
   return booking;
 }
 
-module.exports = { applyCallerTurn, applyAiDraft, finalizeBookingName, isInvalidPatientName, classifyConfirmation };
+module.exports = {
+  applyCallerTurn,
+  applyAiDraft,
+  finalizeBookingName,
+  isInvalidPatientName,
+  classifyConfirmation,
+  ASKED_CONFIRM_RE,
+};

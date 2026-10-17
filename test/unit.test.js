@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { makeModels } = require("./helpers");
 
-const { classifyConfirmation } = require("../utils/nameState");
+const { classifyConfirmation, ASKED_CONFIRM_RE, applyCallerTurn } = require("../utils/nameState");
 const booking = require("../services/bookingService");
 const { getClock } = require("../services/hospitalKnowledge");
 const { parseReply, normalizeMessages } = require("../services/aiService");
@@ -21,12 +21,37 @@ test("clock is IST", () => {
 test("name confirmation (Devanagari-safe)", () => {
   const cases = {
     "हाँ": "yes", "जी": "yes", "जी हाँ सही है": "yes", "हाँ कर दो": "yes", "नहीं नहीं, सही है": "yes",
-    "नहीं, यही नाम है": "yes", "yes": "yes",
+    "नहीं, यही नाम है": "yes", "yes": "yes", "haa kardo": "yes", "kardo": "yes", "कर दो ना": "yes",
+    "कन्फ़र्म कर दो": "yes", "कर देना": "yes", "कर दीजिये": "yes", "confirm": "yes", "book kardo": "yes",
     "जी नहीं": "no", "नहीं, गलत है": "no", "ठीक है पर नाम गलत है": "no", "नहीं": "no",
     "ना ना, राकेश नहीं रमेश": "no", "सही नहीं है": "no",
     "कल सुबह आना है": null,
   };
   for (const [t, want] of Object.entries(cases)) assert.equal(classifyConfirmation(t), want, t);
+});
+
+test("ASKED_CONFIRM_RE matches nuqta and Hinglish confirm questions", () => {
+  const confirmQuestions = [
+    "तो रमेश जी, डॉक्टर एच.एस. चावला, कल सुबह दस बजे, बुक कर दूँ?",
+    "मैं आपकी बुकिंग कन्फ़र्म कर दूँ?",
+    "क्या मैं आपकी बुकिंग कन्फ़र्म कर दूँ?",
+    "मैं आपकी बुकिंग कन्फर्म कर दूँ?",
+    "बुकिंग कन्फ़र्म कर दूँ?",
+    "बुक कर दें?",
+    "shall i confirm",
+  ];
+  for (const q of confirmQuestions) {
+    assert.equal(ASKED_CONFIRM_RE.test(q), true, q);
+  }
+
+  // Caller confirms via 'haa kardo'
+  const session = {
+    messages: [{ role: "assistant", content: "मैं आपकी बुकिंग कन्फ़र्म कर दूँ?" }],
+    patientName: "Ramesh Sharma",
+    nameConfirmed: false,
+  };
+  applyCallerTurn(session, "haa kardo", { parseSpelledName: () => null, extractPatientNameFromSpeech: () => null });
+  assert.equal(session.nameConfirmed, true);
 });
 
 test("normalizers", () => {

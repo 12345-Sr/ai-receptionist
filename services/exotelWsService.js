@@ -26,7 +26,7 @@ const { WebSocketServer } = require("ws");
 const hospitalConfig = require("../config/hospitalConfig");
 const { getSession, clearSession } = require("../utils/sessions");
 const { extractPatientNameFromSpeech, parseSpelledName, toEnglishName } = require("../utils/transliterate");
-const { applyCallerTurn, applyAiDraft, isInvalidPatientName, classifyConfirmation } = require("../utils/nameState");
+const { applyCallerTurn, applyAiDraft, isInvalidPatientName, classifyConfirmation, ASKED_CONFIRM_RE } = require("../utils/nameState");
 const { getClock, relativeDayLabel } = require("./hospitalKnowledge");
 const { calculatePcmRms, analyzeVoiceActivity } = require("../utils/audioDsp");
 const { ADAPTERS, verifyStream } = require("./telephony");
@@ -447,10 +447,28 @@ function handleCall(ws, deps, activeCalls, adapter = ADAPTERS["/exotel/media"]()
     const { speech: llmSpeech, draft, booking: bookReq } = ai.parseReply(raw);
     applyDraft(draft);
 
+    const lastMsg = [...session.messages].slice(0, -1).reverse().find((m) => m.role === "assistant")?.content || "";
+    const wasAskedForConfirmation = ASKED_CONFIRM_RE.test(lastMsg);
+    const callerVerdict = classifyConfirmation(userText);
+
+    let effectiveBookReq = bookReq;
+    if (!effectiveBookReq && wasAskedForConfirmation && callerVerdict === "yes" && !session.appointmentBooked) {
+      if (session.doctorName && (session.date || draft?.date) && (session.selectedTime || draft?.time) && session.patientName) {
+        log("📅 LLM omitted booking tag after caller confirmation — auto-booking from session");
+        effectiveBookReq = {
+          patientName: session.patientName,
+          doctorName: session.doctorName,
+          date: session.date || draft?.date,
+          time: session.selectedTime || draft?.time,
+          reason: session.reason || draft?.reason,
+        };
+      }
+    }
+
     let speech = llmSpeech;
-    if (bookReq) {
+    if (effectiveBookReq) {
       try {
-        speech = await handleBooking(bookReq, llmSpeech, userText);
+        speech = await handleBooking(effectiveBookReq, llmSpeech, userText);
       } catch (err) {
         console.error("[booking] error:", err.message);
         speech = "माफ़ कीजिए, अभी बुकिंग सेव नहीं हो पाई। थोड़ी देर में दोबारा कॉल कर लीजिए, या मैं रिसेप्शन का नंबर बता दूँ?";
@@ -471,7 +489,10 @@ function handleCall(ws, deps, activeCalls, adapter = ADAPTERS["/exotel/media"]()
   async function respondStreaming(turn, userText) {
     const said = [];
     const held = [];
-    const callerSaidYes = classifyConfirmation(userText) === "yes";
+    const lastAssistantMsg = [...session.messages].reverse().find((m) => m.role === "assistant")?.content || "";
+    const wasAskedForConfirmation = ASKED_CONFIRM_RE.test(lastAssistantMsg);
+    const callerVerdict = classifyConfirmation(userText);
+    const callerSaidYes = callerVerdict === "yes" || (wasAskedForConfirmation && callerVerdict !== "no");
     let fillerPlayback = null;
     let gotSpeech = false;
     let pbPromise = null;
@@ -531,10 +552,24 @@ function handleCall(ws, deps, activeCalls, adapter = ADAPTERS["/exotel/media"]()
     const { speech: fullSpeech, draft, booking: bookReq } = ai.parseReply(raw || "");
     applyDraft(draft);
 
+    let effectiveBookReq = bookReq;
+    if (!effectiveBookReq && wasAskedForConfirmation && callerVerdict === "yes" && !session.appointmentBooked) {
+      if (session.doctorName && (session.date || draft?.date) && (session.selectedTime || draft?.time) && session.patientName) {
+        log("📅 LLM omitted booking tag after caller confirmation — auto-booking from session");
+        effectiveBookReq = {
+          patientName: session.patientName,
+          doctorName: session.doctorName,
+          date: session.date || draft?.date,
+          time: session.selectedTime || draft?.time,
+          reason: session.reason || draft?.reason,
+        };
+      }
+    }
+
     let tail = [];
-    if (bookReq) {
+    if (effectiveBookReq) {
       try {
-        tail = [await handleBooking(bookReq, held.join(" ") || fullSpeech, userText)];
+        tail = [await handleBooking(effectiveBookReq, held.join(" ") || fullSpeech, userText)];
       } catch (err) {
         console.error("[booking] error:", err.message);
         tail = ["माफ़ कीजिए, अभी बुकिंग सेव नहीं हो पाई। थोड़ी देर में दोबारा कॉल कर लीजिए, या मैं रिसेप्शन का नंबर बता दूँ?"];
@@ -596,9 +631,19 @@ function handleCall(ws, deps, activeCalls, adapter = ADAPTERS["/exotel/media"]()
       reason: req.reason || session.reason,
     };
 
+    const lastMsg = [...session.messages].filter((m) => m.role === "assistant").pop()?.content || "";
+    const wasAskedForConfirmation = ASKED_CONFIRM_RE.test(lastMsg);
+    const verdict = classifyConfirmation(userText);
+
+    if (verdict === "no") {
+      log("📅 booking rejected by caller");
+      return "माफ़ कीजिए, क्या बदलना है — डॉक्टर, समय, या मरीज़ का नाम?";
+    }
+
     // Guard: LLM kabhi-kabhi caller ki "haan" ke bina hi booking tag de deta hai.
-    // Caller ne abhi haan nahi bola => khud read-back karke poocho.
-    if (classifyConfirmation(userText) !== "yes") {
+    // Agar bot ne pehle read-back karke nahi poochha tha aur caller ne 'yes' nahi bola tha -> poochho.
+    // Lekin agar bot pehle hi poochh chuka tha aur caller ne 'no' nahi bola -> repeat MAT karo, book karo!
+    if (!wasAskedForConfirmation && verdict !== "yes") {
       const doc = booking.normalizeDoctor(request.doctorName);
       const shift = booking.normalizeShift(request.time);
       const date = booking.resolveDate(request.date);
